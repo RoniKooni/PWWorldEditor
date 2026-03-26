@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PW World Editor - Dynamic Build</title>
+    <title>PW World Editor</title>
     <link rel="icon" type="image/png" href="textures/Fav.png">
     <link rel="stylesheet" href="style.css">
 </head>
@@ -20,10 +20,10 @@
     </div>
 
     <div id="hotbar-container">
-        <div id="selection-display">Tool: <span id="block-name">Fist</span></div>
+        <div id="selection-display">Tool: <span id="block-name">Move</span></div>
         <div id="hotbar">
             <div class="slot active" data-slot="0" title="Fist"><img src="textures/ui/Fist.png"></div>
-            <div class="slot" data-slot="1"></div><div class="slot" data-slot="2"></div>
+            <div class="slot" data-slot="1" ></div><div class="slot" data-slot="2"></div>
             <div class="slot" data-slot="3"></div><div class="slot" data-slot="4"></div>
             <div class="slot" data-slot="5"></div><div class="slot" data-slot="6"></div>
             <div class="slot" data-slot="7"></div><div class="slot" data-slot="8"></div>
@@ -39,8 +39,8 @@
         </div>
 
         <div class="tool-group">
-            <button id="bucket-btn" class="icon-text-btn"><img src="textures/ui/BucketDer.png"><span>Bucket</span></button>
-            <button id="shapes-btn" class="icon-text-btn"><img src="textures/ui/Shapes.png"><span>Shapes</span></button>
+            <button id="bucket-btn" class="icon-text-btn"><img src="textures/ui/bucket.png"><span>Bucket</span></button>
+            <button id="shapes-btn" class="icon-text-btn"><img src="textures/ui/banana.png"><span>Shapes</span></button>
         </div>
 
         <div class="tool-group">
@@ -54,12 +54,9 @@
     <div id="help-popup" class="hidden menu-popup">
         <div class="popup-header"><h3>Editor Help</h3><button class="close-btn-fancy">×</button></div>
         <div style="font-size: 14px; line-height: 1.6; color: #ccc;">
-            <p>- Move: Use Middle Mouse Scroll to pan around the world.</p>
-            <p>- Delete: Right Click on any block to remove it instantly.</p>
-            <p>- Selection: Hold CTRL with Fist tool to select. Use Arrow Keys to move blocks. Click Fist on space to deselect.</p>
-            <p>- Shapes: Select block in Shapes menu, then drag to draw.</p>
-            <p>- Water: Water blocks now automatically scroll smoothly to the left.</p>
-            <p>- Undo: Press CTRL + Z to revert last action.</p>
+            <p>- Move: Middle Mouse Scroll to pan.</p>
+            <p>- Delete: Right Click to remove blocks.</p>
+            <p>- Undo: CTRL + Z.</p>
         </div>
     </div>
 
@@ -69,10 +66,39 @@
     </div>
 
     <div id="bg-popup" class="hidden menu-popup"><div class="popup-header"><h3>Backgrounds</h3><button class="close-btn-fancy">×</button></div><div id="bg-list" class="grid-display"></div></div>
-    <div id="bucket-popup" class="hidden menu-popup"><div class="popup-header"><h3>Fill</h3><button class="close-btn-fancy">×</button></div><div id="block-list-bucket" class="grid-display"></div></div>
-    <div id="shapes-popup" class="hidden menu-popup"><div class="popup-header"><h3>Shapes</h3><button class="close-btn-fancy">×</button></div><select id="shape-type" class="ui-search"><option value="rect">Square</option><option value="circle">Circle</option><option value="triangle">Triangle</option><option value="prism">Prism</option></select><div class="toggle-row" style="margin-top:15px;display:flex;justify-content:space-between;align-items:center;"><span>Fill Inside</span><label class="switch"><input type="checkbox" id="shape-fill" checked><span class="slider"></span></label></div><div id="block-list-shapes" class="grid-display" style="margin-top:15px"></div></div>
-    <div id="clear-popup" class="hidden menu-popup"><div class="popup-header"><h3>Edit World</h3><button class="close-btn-fancy">×</button></div><input type="text" id="clear-search" class="ui-search" placeholder="Replace block..."><div id="clear-suggestions" class="suggestions-list hidden"></div><div id="replace-controls" class="hidden" style="margin-top:10px;background:rgba(0,0,0,0.2);padding:10px;border-radius:4px;"><p id="replace-desc" style="font-size:12px;margin:0 0 10px 0;color:#3abdc2;"></p><button id="confirm-replace" class="fancy-btn highlight">Confirm Replace</button></div><hr style="border:0;border-top:1px solid #333;margin:15px 0;"><button id="delete-all-trigger" class="fancy-btn danger">Delete Everything</button></div>
+
+    <div id="bucket-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Fill</h3><input type="text" id="bucket-search" class="ui-search" placeholder="Search for fill..."><button class="close-btn-fancy">×</button></div>
+        <div id="block-list-bucket" class="grid-display"></div>
+    </div>
+
+    <div id="shapes-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Shapes</h3><input type="text" id="shapes-search" class="ui-search" placeholder="Search for shape block..."><button class="close-btn-fancy">×</button></div>
+        <select id="shape-type" class="ui-search">
+            <option value="rect">Square</option>
+            <option value="circle">Circle</option>
+        </select>
+        <div class="toggle-row" style="margin-top:15px;display:flex;justify-content:space-between;align-items:center;">
+            <span>Fill Inside</span>
+            <label class="switch"><input type="checkbox" id="shape-fill" checked><span class="slider"></span></label>
+        </div>
+        <div id="block-list-shapes" class="grid-display" style="margin-top:15px"></div>
+    </div>
+
+    <div id="clear-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Edit World</h3><button class="close-btn-fancy">×</button></div>
+        <input type="text" id="clear-search" class="ui-search" placeholder="Search block to REPLACE...">
+        <div id="clear-suggestions" class="suggestions-list hidden" style="max-height: 200px; overflow-y: auto; margin-top: 5px; border: 1px solid #333; border-radius: 4px;"></div>
+        <div id="replace-controls" class="hidden" style="margin-top:10px;background:rgba(58, 189, 194, 0.1);padding:10px;border-radius:4px; border: 1px solid #3abdc2;">
+            <p id="replace-desc" style="font-size:12px;margin:0 0 10px 0;color:#3abdc2;"></p>
+            <button id="confirm-replace" class="fancy-btn highlight">Confirm Replace</button>
+        </div>
+        <hr style="border:0;border-top:1px solid #333;margin:15px 0;">
+        <button id="delete-all-trigger" class="fancy-btn danger">Delete Everything</button>
+    </div>
 </div>
+
+<script src="asset_list.js"></script>
 <script src="script.js"></script>
 </body>
 </html>
