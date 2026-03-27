@@ -16,7 +16,7 @@
 
 Simple and easy-to-use world editor for Pixel Worlds.
 
-## 🟧 Adding Blocks
+## Adding Blocks
 
 Adding blocks is extremely simple:
 
@@ -35,13 +35,20 @@ BlockName_0.png BlockName_Glow.png
 That's it the code will add it to inventory tab automatically, but make sure to add it to the right folder, if its a prop add it to /props. and names must not mismatch!
 
 ## Features
+
+<p align="left">
+  <a>
+    <img src="https://i.imgur.com/kYj1bFo.png" alt="Screenshot" width="600"/>
+  </a>
+</p>
+
 - Drag & drop to add new blocks
 - Automatic new added blocks detection  
 - Saving & Importing worlds as .json
 - Changing backgrounds (orbs)
 - General block replacement
 - Bucket tool
-- Shapes Tool
+- Shapes tool
 - Block pick tool
 - Screenshot button - saves your world as .png
 
