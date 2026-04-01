@@ -50,3 +50,5 @@ input:checked + .slider:before { transform: translateX(20px); }
 
 .hidden { display: none !important; }
 #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 105; backdrop-filter: blur(3px); }
+
+#coords-display { position: absolute; top: 20px; right: 20px; background: rgba(10, 10, 10, 0.85); border: 1px solid #333; padding: 8px 15px; border-radius: 8px; color: #3abdc2; font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 200; box-shadow: 0 4px 10px rgba(0,0,0,0.5); letter-spacing: 1px;}

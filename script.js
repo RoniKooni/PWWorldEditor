@@ -338,13 +338,27 @@ viewport.onmousedown = (e) => {
     }
 };
 
+const coordsDisplay = document.getElementById('coords-display');
+
 window.onmousemove = (e) => {
+    // Existing Panning Logic
     if (isPanning) {
         posX += e.movementX;
         posY += e.movementY;
         updateTransform();
     } else if (isDrawing && activeTool !== 'shapes') {
         handlePlace(e);
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = Math.floor(((e.clientX - rect.left) / scale) / TILE);
+    const mouseY = Math.floor(((e.clientY - rect.top) / scale) / TILE);
+
+    if (mouseX >= 0 && mouseX < GRID_X && mouseY >= 0 && mouseY < GRID_Y) {
+        coordsDisplay.innerText = `X: ${mouseX}, Y: ${mouseY}`;
+        coordsDisplay.style.color = "#3abdc2";
+    } else {
+        coordsDisplay.style.color = "#ff4444";
     }
 };
 
