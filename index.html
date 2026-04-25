@@ -52,6 +52,15 @@
             <button id="import-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_import.png"><span>Import</span></button>
             <input type="file" id="file-input" class="hidden" accept=".json">
         </div>
+
+        <div class="tool-group">
+            <button id="ref-overlay-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_eye.png"><span>Reference</span></button>
+            <button id="custom-bg-btn" class="icon-text-btn"><img src="textures/ui/ButtonIcon_orb.png"><span>Custom BG</span></button>
+            <button id="img2blocks-btn" class="icon-text-btn"><img src="textures/ui/PaintBrush.png"><span>Img→Blocks</span></button>
+            <input type="file" id="ref-overlay-input" class="hidden" accept="image/*">
+            <input type="file" id="custom-bg-input" class="hidden" accept="image/*">
+            <input type="file" id="img2blocks-input" class="hidden" accept="image/*">
+        </div>
     </div>
 
     <div id="help-popup" class="hidden menu-popup">
@@ -93,6 +102,84 @@
             <label class="switch"><input type="checkbox" id="shape-fill" checked><span class="slider"></span></label>
         </div>
         <div id="block-list-shapes" class="grid-display" style="margin-top:15px"></div>
+    </div>
+
+    <!-- Reference Image Overlay Panel -->
+    <div id="ref-overlay-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Reference Overlay</h3><button class="close-btn-fancy">×</button></div>
+        <div style="font-size:13px;color:#aaa;margin-bottom:10px;">Upload an image to trace over the canvas.</div>
+        <button id="ref-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">📁 Upload Image</button>
+        <div id="ref-controls" class="hidden">
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Opacity</label>
+                <input type="range" id="ref-opacity" min="0" max="100" value="40" style="width:100%">
+                <span id="ref-opacity-val" style="font-size:12px;color:#3abdc2;">40%</span>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Scale</label>
+                <input type="range" id="ref-scale" min="10" max="300" value="100" style="width:100%">
+                <span id="ref-scale-val" style="font-size:12px;color:#3abdc2;">100%</span>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Offset X</label>
+                <input type="range" id="ref-offset-x" min="-2560" max="2560" value="0" style="width:100%">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Offset Y</label>
+                <input type="range" id="ref-offset-y" min="-1920" max="1920" value="0" style="width:100%">
+            </div>
+            <div class="toggle-row" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <span style="font-size:12px;color:#aaa;">Show Overlay</span>
+                <label class="switch"><input type="checkbox" id="ref-visible" checked><span class="slider"></span></label>
+            </div>
+            <button id="ref-clear-btn" class="fancy-btn danger" style="width:100%">Remove Image</button>
+        </div>
+    </div>
+
+    <!-- Custom Background Panel -->
+    <div id="custom-bg-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Custom Background</h3><button class="close-btn-fancy">×</button></div>
+        <div style="font-size:13px;color:#aaa;margin-bottom:10px;">Use any image as your world background.</div>
+        <button id="custom-bg-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">📁 Upload Background</button>
+        <div id="custom-bg-preview" class="hidden" style="margin-top:10px;text-align:center;">
+            <img id="custom-bg-thumb" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #333;margin-bottom:8px;">
+            <button id="custom-bg-apply-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">Apply as Background</button>
+            <button id="custom-bg-remove-btn" class="fancy-btn danger" style="width:100%">Remove Custom BG</button>
+        </div>
+    </div>
+
+    <!-- Image to Blocks Converter -->
+    <div id="img2blocks-popup" class="hidden menu-popup">
+        <div class="popup-header"><h3>Image → Blocks</h3><button class="close-btn-fancy">×</button></div>
+        <div style="font-size:13px;color:#aaa;margin-bottom:10px;">Convert an image into pixel blocks automatically.</div>
+        <button id="img2blocks-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">📁 Upload Image</button>
+        <div id="img2blocks-controls" class="hidden">
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Placement X (tile)</label>
+                <input type="number" id="i2b-x" value="0" min="0" max="79" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Placement Y (tile)</label>
+                <input type="number" id="i2b-y" value="0" min="0" max="59" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Width (tiles)</label>
+                <input type="number" id="i2b-w" value="20" min="1" max="80" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Height (tiles)</label>
+                <input type="number" id="i2b-h" value="15" min="1" max="60" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+            </div>
+            <div style="margin-bottom:6px;font-size:12px;color:#aaa;">Block layer: 
+                <select id="i2b-layer" style="background:#222;color:#fff;border:1px solid #444;padding:2px 4px;border-radius:4px;">
+                    <option value="fg">Foreground (blocks)</option>
+                    <option value="bg">Background (walls)</option>
+                </select>
+            </div>
+            <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
+            <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
+            <div id="i2b-status" style="font-size:11px;color:#3abdc2;text-align:center;"></div>
+        </div>
     </div>
 
     <div id="clear-popup" class="hidden menu-popup">
