@@ -115,15 +115,8 @@ function getImg(src) {
 
 function setBackground(bgFile) {
     activeAtmosphere = bgFile;
-    if (bgFile) {
-        canvas.style.backgroundImage = `url("textures/orbs/${bgFile}")`;
-        canvas.style.backgroundSize = 'cover';
-    } else {
-        canvas.style.backgroundImage = 'none';
-        canvas.style.backgroundSize = '';
-    }
-    // Clear any custom bg when an orb is chosen
-    if (bgFile && typeof customBgDataUrl !== 'undefined' && customBgDataUrl) {
+    canvas.style.backgroundImage = bgFile ? `url("textures/orbs/${bgFile}")` : 'none';
+    if (typeof customBgDataUrl !== 'undefined' && customBgDataUrl && bgFile) {
         customBgDataUrl = null;
         const el = document.getElementById('custom-bg-preview');
         if (el) el.classList.add('hidden');
