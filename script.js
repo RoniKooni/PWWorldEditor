@@ -233,7 +233,7 @@ function closeAll() { document.querySelectorAll('.menu-popup, #overlay, .suggest
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 
-const bindings = { 'inv-toggle': 'inventory-popup', 'bg-ui-btn': 'bg-popup', 'clear-menu-btn': 'clear-popup', 'help-btn': 'help-popup' };
+const bindings = { 'inv-toggle': 'inventory-popup', 'bg-ui-btn': 'bg-popup', 'clear-menu-btn': 'clear-popup', 'help-btn': 'help-popup', 'ref-overlay-btn': 'ref-overlay-popup', 'custom-bg-btn': 'custom-bg-popup', 'img2blocks-btn': 'img2blocks-popup' };
 Object.keys(bindings).forEach(id => { const el = document.getElementById(id); if(el) el.onclick = () => openMenu(bindings[id]); });
 
 document.getElementById('bucket-btn').onclick = () => {
@@ -503,7 +503,31 @@ document.getElementById('screenshot-btn').onclick = () => {
     tempCanvas.width = canvas.width;
     tempCanvas.height = canvas.height;
     const tempCtx = tempCanvas.getContext('2d');
-    if (activeAtmosphere) {
+
+    const drawBlocks = () => {
+        for (let x = 0; x < GRID_X; x++) {
+            for (let y = 0; y < GRID_Y; y++) {
+                if (bgData[x][y]) {
+                    const tex = getBlockTexture(x, y, bgData[x][y]);
+                    if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
+                }
+                if (fgData[x][y]) {
+                    const tex = getBlockTexture(x, y, fgData[x][y]);
+                    if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
+                }
+            }
+        }
+        const link = document.createElement('a');
+        link.download = `PW_World_Export_${Date.now()}.png`;
+        link.href = tempCanvas.toDataURL("image/png");
+        link.click();
+    };
+
+    if (customBgDataUrl) {
+        const bgImg = new Image();
+        bgImg.onload = () => { tempCtx.drawImage(bgImg, 0, 0, tempCanvas.width, tempCanvas.height); drawBlocks(); };
+        bgImg.src = customBgDataUrl;
+    } else if (activeAtmosphere) {
         const bgImg = getImg(`textures/orbs/${activeAtmosphere}`);
         if (bgImg && bgImg.complete) {
             tempCtx.drawImage(bgImg, 0, 0, tempCanvas.width, tempCanvas.height);
@@ -511,26 +535,12 @@ document.getElementById('screenshot-btn').onclick = () => {
             tempCtx.fillStyle = "#1a1a1a";
             tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
         }
+        drawBlocks();
     } else {
         tempCtx.fillStyle = "#000";
         tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+        drawBlocks();
     }
-    for (let x = 0; x < GRID_X; x++) {
-        for (let y = 0; y < GRID_Y; y++) {
-            if (bgData[x][y]) {
-                const tex = getBlockTexture(x, y, bgData[x][y]);
-                if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
-            }
-            if (fgData[x][y]) {
-                const tex = getBlockTexture(x, y, fgData[x][y]);
-                if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
-            }
-        }
-    }
-    const link = document.createElement('a');
-    link.download = `PW_World_Export_${Date.now()}.png`;
-    link.href = tempCanvas.toDataURL("image/png");
-    link.click();
 };
 
 document.querySelectorAll('.slot').forEach(s => {
@@ -540,3 +550,234 @@ document.querySelectorAll('.slot').forEach(s => {
 autoLoadAssets();
 updateTransform();
 render();
+
+// ============================================================
+// FEATURE: Reference Image Overlay
+// ============================================================
+let refImg = null;
+let refOverlayImg = null;
+
+const refOverlayEl = (() => {
+    const el = document.createElement('img');
+    el.id = 'ref-overlay-img';
+    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:10;transform-origin:top left;';
+    viewport.appendChild(el);
+    return el;
+})();
+
+function updateRefOverlay() {
+    if (!refImg) { refOverlayEl.style.display = 'none'; return; }
+    const visible = document.getElementById('ref-visible').checked;
+    const opacity = document.getElementById('ref-opacity').value / 100;
+    const sc = document.getElementById('ref-scale').value / 100;
+    const ox = parseInt(document.getElementById('ref-offset-x').value);
+    const oy = parseInt(document.getElementById('ref-offset-y').value);
+    refOverlayEl.src = refImg;
+    refOverlayEl.style.display = visible ? 'block' : 'none';
+    refOverlayEl.style.opacity = opacity;
+    // Position relative to canvas inside viewport (canvas has its own transform)
+    refOverlayEl.style.transform = `translate(${posX + ox * scale}px, ${posY + oy * scale}px) scale(${scale * sc})`;
+}
+
+// Hook into updateTransform to also update overlay
+const _origUpdateTransform = updateTransform;
+// We override by patching after the fact
+setInterval(updateRefOverlay, 50);
+
+document.getElementById('ref-overlay-btn').onclick = () => openMenu('ref-overlay-popup');
+document.getElementById('ref-upload-btn').onclick = () => document.getElementById('ref-overlay-input').click();
+document.getElementById('ref-overlay-input').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        refImg = ev.target.result;
+        refOverlayEl.src = refImg;
+        document.getElementById('ref-controls').classList.remove('hidden');
+        updateRefOverlay();
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+};
+
+document.getElementById('ref-opacity').oninput = (e) => {
+    document.getElementById('ref-opacity-val').innerText = e.target.value + '%';
+    updateRefOverlay();
+};
+document.getElementById('ref-scale').oninput = (e) => {
+    document.getElementById('ref-scale-val').innerText = e.target.value + '%';
+    updateRefOverlay();
+};
+document.getElementById('ref-offset-x').oninput = updateRefOverlay;
+document.getElementById('ref-offset-y').oninput = updateRefOverlay;
+document.getElementById('ref-visible').onchange = updateRefOverlay;
+document.getElementById('ref-clear-btn').onclick = () => {
+    refImg = null;
+    refOverlayEl.src = '';
+    refOverlayEl.style.display = 'none';
+    document.getElementById('ref-controls').classList.add('hidden');
+};
+
+// ============================================================
+// FEATURE: Custom Background
+// ============================================================
+let customBgDataUrl = null;
+
+document.getElementById('custom-bg-btn').onclick = () => openMenu('custom-bg-popup');
+document.getElementById('custom-bg-upload-btn').onclick = () => document.getElementById('custom-bg-input').click();
+document.getElementById('custom-bg-input').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        customBgDataUrl = ev.target.result;
+        document.getElementById('custom-bg-thumb').src = customBgDataUrl;
+        document.getElementById('custom-bg-preview').classList.remove('hidden');
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+};
+document.getElementById('custom-bg-apply-btn').onclick = () => {
+    if (!customBgDataUrl) return;
+    saveHistory();
+    // Set canvas background to custom image
+    canvas.style.backgroundImage = `url("${customBgDataUrl}")`;
+    canvas.style.backgroundSize = '100% 100%';
+    // Store so undo/screenshot still works
+    activeAtmosphere = null; // clear orb bg since we're using custom
+    closeAll();
+};
+document.getElementById('custom-bg-remove-btn').onclick = () => {
+    customBgDataUrl = null;
+    canvas.style.backgroundImage = 'none';
+    document.getElementById('custom-bg-preview').classList.add('hidden');
+};
+
+// Patch setBackground to also clear custom bg when an orb bg is chosen
+const _origSetBackground = setBackground;
+function setBackground(bgFile) {
+    // If an orb bg is chosen, clear the custom bg styling
+    if (bgFile && customBgDataUrl) {
+        customBgDataUrl = null;
+        document.getElementById('custom-bg-preview').classList.add('hidden');
+    }
+    _origSetBackground(bgFile);
+}
+
+// ============================================================
+// FEATURE: Image to Blocks Converter
+// ============================================================
+let i2bImgData = null;
+let i2bImgEl = null;
+
+document.getElementById('img2blocks-btn').onclick = () => openMenu('img2blocks-popup');
+document.getElementById('img2blocks-upload-btn').onclick = () => document.getElementById('img2blocks-input').click();
+document.getElementById('img2blocks-input').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        i2bImgData = ev.target.result;
+        const preview = document.getElementById('i2b-preview');
+        preview.innerHTML = `<img src="${i2bImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #444;">`;
+        document.getElementById('img2blocks-controls').classList.remove('hidden');
+        document.getElementById('i2b-status').innerText = 'Image loaded. Configure settings and convert!';
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+};
+
+document.getElementById('img2blocks-convert-btn').onclick = () => {
+    if (!i2bImgData) { alert('Please upload an image first.'); return; }
+
+    const startX = parseInt(document.getElementById('i2b-x').value);
+    const startY = parseInt(document.getElementById('i2b-y').value);
+    const tileW = parseInt(document.getElementById('i2b-w').value);
+    const tileH = parseInt(document.getElementById('i2b-h').value);
+    const layerChoice = document.getElementById('i2b-layer').value;
+
+    const statusEl = document.getElementById('i2b-status');
+    statusEl.innerText = 'Converting...';
+
+    // Get color pixel data from image
+    const tempImg = new Image();
+    tempImg.onload = () => {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = tileW;
+        offscreen.height = tileH;
+        const offCtx = offscreen.getContext('2d');
+        offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
+        const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
+
+        // Build color palette from pixel blocks
+        // We'll match each pixel color to the nearest Pixel Block by color
+        const pixelBlocks = blockLibrary.filter(b =>
+            b.fileName.startsWith('Pixel Block') && !b.fileName.includes('_Alt')
+        );
+
+        if (pixelBlocks.length === 0) {
+            statusEl.innerText = 'Error: No Pixel Blocks found in library!';
+            return;
+        }
+
+        // Pre-cache pixel block colors by rendering a 1x1 of each
+        function getBlockAvgColor(block) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    const c = document.createElement('canvas');
+                    c.width = 1; c.height = 1;
+                    const cx = c.getContext('2d');
+                    cx.drawImage(img, 0, 0, 1, 1);
+                    const d = cx.getImageData(0, 0, 1, 1).data;
+                    resolve({ r: d[0], g: d[1], b: d[2], block });
+                };
+                img.onerror = () => resolve(null);
+                img.src = block.texture;
+            });
+        }
+
+        Promise.all(pixelBlocks.map(getBlockAvgColor)).then(colors => {
+            const palette = colors.filter(Boolean);
+            if (palette.length === 0) {
+                statusEl.innerText = 'Error: Could not sample block colors.';
+                return;
+            }
+
+            saveHistory();
+            const layer = layerChoice === 'bg' ? bgData : fgData;
+            let placed = 0;
+
+            for (let ty = 0; ty < tileH; ty++) {
+                for (let tx = 0; tx < tileW; tx++) {
+                    const idx = (ty * tileW + tx) * 4;
+                    const r = pixelData[idx];
+                    const g = pixelData[idx + 1];
+                    const b = pixelData[idx + 2];
+                    const a = pixelData[idx + 3];
+
+                    // Skip transparent pixels
+                    if (a < 64) continue;
+
+                    // Find nearest color block
+                    let best = null, bestDist = Infinity;
+                    for (const entry of palette) {
+                        const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+                        const dist = dr*dr + dg*dg + db*db;
+                        if (dist < bestDist) { bestDist = dist; best = entry.block; }
+                    }
+
+                    const worldX = startX + tx;
+                    const worldY = startY + ty;
+                    if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
+                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
+                        placed++;
+                    }
+                }
+            }
+            statusEl.innerText = `✅ Done! Placed ${placed} blocks.`;
+        });
+    };
+    tempImg.src = i2bImgData;
+};
