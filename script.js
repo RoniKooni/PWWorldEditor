@@ -116,11 +116,6 @@ function getImg(src) {
 function setBackground(bgFile) {
     activeAtmosphere = bgFile;
     canvas.style.backgroundImage = bgFile ? `url("textures/orbs/${bgFile}")` : 'none';
-    if (typeof customBgDataUrl !== 'undefined' && customBgDataUrl && bgFile) {
-        customBgDataUrl = null;
-        const el = document.getElementById('custom-bg-preview');
-        if (el) el.classList.add('hidden');
-    }
 }
 
 function updateTransform() { canvas.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`; }
@@ -658,7 +653,16 @@ document.getElementById('custom-bg-remove-btn').onclick = () => {
     document.getElementById('custom-bg-preview').classList.add('hidden');
 };
 
-
+// Patch setBackground to also clear custom bg when an orb bg is chosen
+const _origSetBackground = setBackground;
+function setBackground(bgFile) {
+    // If an orb bg is chosen, clear the custom bg styling
+    if (bgFile && customBgDataUrl) {
+        customBgDataUrl = null;
+        document.getElementById('custom-bg-preview').classList.add('hidden');
+    }
+    _origSetBackground(bgFile);
+}
 
 // ============================================================
 // FEATURE: Image to Blocks Converter
@@ -683,17 +687,6 @@ document.getElementById('img2blocks-input').onchange = (e) => {
     e.target.value = '';
 };
 
-// Variety slider label updater
-document.getElementById('i2b-variety').oninput = (e) => {
-    const labels = [
-        '🟦 Pixel blocks only (cleanest)',
-        '🟧 + All foreground blocks',
-        '🔶 + Background wall tiles',
-        '🌈 Everything inc. props & water'
-    ];
-    document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
-};
-
 document.getElementById('img2blocks-convert-btn').onclick = () => {
     if (!i2bImgData) { alert('Please upload an image first.'); return; }
 
@@ -702,12 +695,11 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
     const layerChoice = document.getElementById('i2b-layer').value;
-    const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
 
     const statusEl = document.getElementById('i2b-status');
-    statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
+    statusEl.innerText = 'Converting...';
 
-    // Sample image pixels
+    // Get color pixel data from image
     const tempImg = new Image();
     tempImg.onload = () => {
         const offscreen = document.createElement('canvas');
@@ -717,140 +709,75 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
         const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
 
-        // VARIETY LEVELS:
-        // 1 = Pixel Blocks only (flat solid color, cleanest look)
-        // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
-        // 3 = + textured blocks (soil, stone, wood, metal, etc.)
-        // 4 = everything (props, water, all types)
-        // Filter helpers
-        const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-        const isBlockFolder = (b) => b.folder === 'block';
-        const isPropFolder  = (b) => b.folder === 'prop';
-        const isWallFolder  = (b) => b.folder === 'background';
-        const isWaterFolder = (b) => b.folder === 'water';
+        // Build color palette from pixel blocks
+        // We'll match each pixel color to the nearest Pixel Block by color
+        const pixelBlocks = blockLibrary.filter(b =>
+            b.fileName.startsWith('Pixel Block') && !b.fileName.includes('_Alt')
+        );
 
-        // Build candidate list based on variety
-        // Level 1: only Pixel Blocks (43 flat solid colors — best color accuracy)
-        // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
-        // Level 3: + background wall tiles
-        // Level 4: everything including props and water
-        const candidateBlocks = blockLibrary.filter(b => {
-            if (b.fileName.includes('_Alt')) return false;
-            if (b.fileName.includes('_Glow')) return false;
-            const frameMatch = b.fileName.match(/_(\d+)\.png$/);
-            if (frameMatch && frameMatch[1] !== '0') return false;
-
-            if (variety === 1) return isPixelBlock(b);
-            if (variety === 2) return isPixelBlock(b) || isBlockFolder(b);
-            if (variety === 3) return isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
-            return true; // variety 4: everything
-        });
-
-        if (candidateBlocks.length === 0) {
-            statusEl.innerText = 'Error: No blocks found for the selected layer!';
+        if (pixelBlocks.length === 0) {
+            statusEl.innerText = 'Error: No Pixel Blocks found in library!';
             return;
         }
 
-        statusEl.innerText = `⏳ Variety level ${variety}: sampling ${candidateBlocks.length} blocks...`;
-
-        // Sample average color of each block by drawing to a small canvas
-        function sampleBlockColor(block) {
+        // Pre-cache pixel block colors by rendering a 1x1 of each
+        function getBlockAvgColor(block) {
             return new Promise((resolve) => {
-                const img = imgCache[block.texture] || (() => {
-                    const i = new Image(); i.src = block.texture; return i;
-                })();
-                const doSample = () => {
-                    try {
-                        const c = document.createElement('canvas');
-                        c.width = 4; c.height = 4;
-                        const cx = c.getContext('2d');
-                        cx.drawImage(img, 0, 0, 4, 4);
-                        const d = cx.getImageData(0, 0, 4, 4).data;
-                        // Average all 16 pixels, skip transparent ones
-                        let r=0, g=0, b=0, count=0;
-                        for (let i=0; i<d.length; i+=4) {
-                            if (d[i+3] > 64) { r+=d[i]; g+=d[i+1]; b+=d[i+2]; count++; }
-                        }
-                        if (count === 0) { resolve(null); return; }
-                        resolve({ r: Math.round(r/count), g: Math.round(g/count), b: Math.round(b/count), block });
-                    } catch(e) { resolve(null); }
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    const c = document.createElement('canvas');
+                    c.width = 1; c.height = 1;
+                    const cx = c.getContext('2d');
+                    cx.drawImage(img, 0, 0, 1, 1);
+                    const d = cx.getImageData(0, 0, 1, 1).data;
+                    resolve({ r: d[0], g: d[1], b: d[2], block });
                 };
-                if (img.complete && img.naturalWidth > 0) doSample();
-                else { img.onload = doSample; img.onerror = () => resolve(null); }
+                img.onerror = () => resolve(null);
+                img.src = block.texture;
             });
         }
 
-        // Sample in batches to avoid freezing the browser
-        const BATCH = 50;
-        const results = [];
-        let idx = 0;
-
-        function processBatch() {
-            const slice = candidateBlocks.slice(idx, idx + BATCH);
-            idx += BATCH;
-            Promise.all(slice.map(sampleBlockColor)).then(batch => {
-                batch.forEach(r => { if (r) results.push(r); });
-                if (idx < candidateBlocks.length) {
-                    statusEl.innerText = `⏳ Sampling blocks... ${Math.min(idx, candidateBlocks.length)}/${candidateBlocks.length}`;
-                    setTimeout(processBatch, 0);
-                } else {
-                    doConvert(results);
-                }
-            });
-        }
-
-        function doConvert(palette) {
+        Promise.all(pixelBlocks.map(getBlockAvgColor)).then(colors => {
+            const palette = colors.filter(Boolean);
             if (palette.length === 0) {
-                statusEl.innerText = 'Error: Could not sample any block colors.';
+                statusEl.innerText = 'Error: Could not sample block colors.';
                 return;
             }
-
-            statusEl.innerText = `⚡ Converting with ${palette.length} block colors...`;
 
             saveHistory();
             const layer = layerChoice === 'bg' ? bgData : fgData;
             let placed = 0;
 
-            // Use a simple cache: quantize pixel color to nearest 8 to reduce lookups
-            const colorCache = {};
-
             for (let ty = 0; ty < tileH; ty++) {
                 for (let tx = 0; tx < tileW; tx++) {
-                    const pi = (ty * tileW + tx) * 4;
-                    const r = pixelData[pi];
-                    const g = pixelData[pi+1];
-                    const b = pixelData[pi+2];
-                    const a = pixelData[pi+3];
+                    const idx = (ty * tileW + tx) * 4;
+                    const r = pixelData[idx];
+                    const g = pixelData[idx + 1];
+                    const b = pixelData[idx + 2];
+                    const a = pixelData[idx + 3];
+
+                    // Skip transparent pixels
                     if (a < 64) continue;
 
-                    // Quantize to speed up matching
-                    const key = `${r>>3},${g>>3},${b>>3}`;
-                    let best = colorCache[key];
-                    if (!best) {
-                        let bestDist = Infinity;
-                        for (const entry of palette) {
-                            const dr = r-entry.r, dg = g-entry.g, db = b-entry.b;
-                            // Weighted RGB distance (human eye is more sensitive to green)
-                            const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                            if (dist < bestDist) { bestDist = dist; best = entry.block; }
-                        }
-                        colorCache[key] = best;
+                    // Find nearest color block
+                    let best = null, bestDist = Infinity;
+                    for (const entry of palette) {
+                        const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+                        const dist = dr*dr + dg*dg + db*db;
+                        if (dist < bestDist) { bestDist = dist; best = entry.block; }
                     }
 
                     const worldX = startX + tx;
                     const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        // Force place on chosen layer regardless of block's native type
-                        const blockCopy = JSON.parse(JSON.stringify(best));
-                        layer[worldX][worldY] = blockCopy;
+                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
                         placed++;
                     }
                 }
             }
-            statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
-        }
-
-        processBatch();
+            statusEl.innerText = `✅ Done! Placed ${placed} blocks.`;
+        });
     };
     tempImg.src = i2bImgData;
 };
