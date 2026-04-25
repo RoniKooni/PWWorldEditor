@@ -683,6 +683,17 @@ document.getElementById('img2blocks-input').onchange = (e) => {
     e.target.value = '';
 };
 
+// Variety slider label updater
+document.getElementById('i2b-variety').oninput = (e) => {
+    const labels = [
+        '🟦 Solid pixel blocks only',
+        '🟧 + Basic colored blocks',
+        '🔶 + Textured & special blocks',
+        '🌈 All blocks (max variety)'
+    ];
+    document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
+};
+
 document.getElementById('img2blocks-convert-btn').onclick = () => {
     if (!i2bImgData) { alert('Please upload an image first.'); return; }
 
@@ -691,6 +702,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
     const layerChoice = document.getElementById('i2b-layer').value;
+    const variety = parseInt(document.getElementById('i2b-variety').value);
 
     const statusEl = document.getElementById('i2b-status');
     statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
@@ -705,14 +717,32 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
         const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
 
-        // Use ALL blocks for color matching — widest possible palette
+        // VARIETY LEVELS:
+        // 1 = Pixel Blocks only (flat solid color, cleanest look)
+        // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
+        // 3 = + textured blocks (soil, stone, wood, metal, etc.)
+        // 4 = everything (props, water, all types)
+        const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
+        const isBasicColored = (b) => {
+            const n = b.name.toLowerCase();
+            return b.type === 'block' && (
+                n.includes('block') || n.includes('brick') || n.includes('jewel') ||
+                n.includes('jelly') || n.includes('tile') || n.includes('candy') ||
+                n.includes('glow')
+            );
+        };
+        const isTextured = (b) => b.type === 'block';
+
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
-            // Skip non-first animation frames
             const frameMatch = b.fileName.match(/_(\d+)\.png$/);
             if (frameMatch && frameMatch[1] !== '0') return false;
-            return true;
+
+            if (variety === 1) return isPixelBlock(b);
+            if (variety === 2) return isPixelBlock(b) || isBasicColored(b);
+            if (variety === 3) return isPixelBlock(b) || isTextured(b);
+            return true; // variety 4 = all
         });
 
         if (candidateBlocks.length === 0) {
