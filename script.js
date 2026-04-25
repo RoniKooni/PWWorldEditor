@@ -712,16 +712,14 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
         const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
 
-        // Use ALL blocks except _Alt, _Glow, animated frames (non-0), and props/water
-        // (props/water are usually decorative/animated — include blocks + backgrounds for best color coverage)
+        // Use ALL blocks for color matching — widest possible palette
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
+            // Skip non-first animation frames
             const frameMatch = b.fileName.match(/_(\d+)\.png$/);
             if (frameMatch && frameMatch[1] !== '0') return false;
-            // For layer choice: if fg, use blocks; if bg, use background walls
-            if (layerChoice === 'bg') return b.type === 'wall';
-            return b.type !== 'wall' && b.type !== 'water' && b.type !== 'prop';
+            return true;
         });
 
         if (candidateBlocks.length === 0) {
@@ -818,7 +816,9 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const worldX = startX + tx;
                     const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
+                        // Force place on chosen layer regardless of block's native type
+                        const blockCopy = JSON.parse(JSON.stringify(best));
+                        layer[worldX][worldY] = blockCopy;
                         placed++;
                     }
                 }
