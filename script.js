@@ -686,10 +686,10 @@ document.getElementById('img2blocks-input').onchange = (e) => {
 // Variety slider label updater
 document.getElementById('i2b-variety').oninput = (e) => {
     const labels = [
-        '🟦 Solid pixel blocks only',
-        '🟧 + Basic colored blocks',
-        '🔶 + Textured & special blocks',
-        '🌈 All blocks (max variety)'
+        '🟦 Pixel blocks only (cleanest)',
+        '🟧 + All foreground blocks',
+        '🔶 + Background wall tiles',
+        '🌈 Everything inc. props & water'
     ];
     document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
 };
@@ -702,7 +702,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
     const layerChoice = document.getElementById('i2b-layer').value;
-    const variety = parseInt(document.getElementById('i2b-variety').value);
+    const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
 
     const statusEl = document.getElementById('i2b-status');
     statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
@@ -722,17 +722,18 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
         // 3 = + textured blocks (soil, stone, wood, metal, etc.)
         // 4 = everything (props, water, all types)
+        // Filter helpers
         const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-        const isBasicColored = (b) => {
-            const n = b.name.toLowerCase();
-            return b.type === 'block' && (
-                n.includes('block') || n.includes('brick') || n.includes('jewel') ||
-                n.includes('jelly') || n.includes('tile') || n.includes('candy') ||
-                n.includes('glow')
-            );
-        };
-        const isTextured = (b) => b.type === 'block';
+        const isBlockFolder = (b) => b.folder === 'block';
+        const isPropFolder  = (b) => b.folder === 'prop';
+        const isWallFolder  = (b) => b.folder === 'background';
+        const isWaterFolder = (b) => b.folder === 'water';
 
+        // Build candidate list based on variety
+        // Level 1: only Pixel Blocks (43 flat solid colors — best color accuracy)
+        // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
+        // Level 3: + background wall tiles
+        // Level 4: everything including props and water
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
@@ -740,9 +741,9 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             if (frameMatch && frameMatch[1] !== '0') return false;
 
             if (variety === 1) return isPixelBlock(b);
-            if (variety === 2) return isPixelBlock(b) || isBasicColored(b);
-            if (variety === 3) return isPixelBlock(b) || isTextured(b);
-            return true; // variety 4 = all
+            if (variety === 2) return isPixelBlock(b) || isBlockFolder(b);
+            if (variety === 3) return isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
+            return true; // variety 4: everything
         });
 
         if (candidateBlocks.length === 0) {
@@ -750,7 +751,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             return;
         }
 
-        statusEl.innerText = `⏳ Sampling ${candidateBlocks.length} blocks...`;
+        statusEl.innerText = `⏳ Variety level ${variety}: sampling ${candidateBlocks.length} blocks...`;
 
         // Sample average color of each block by drawing to a small canvas
         function sampleBlockColor(block) {
