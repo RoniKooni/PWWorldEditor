@@ -115,8 +115,15 @@ function getImg(src) {
 
 function setBackground(bgFile) {
     activeAtmosphere = bgFile;
-    canvas.style.backgroundImage = bgFile ? `url("textures/orbs/${bgFile}")` : 'none';
-    if (typeof customBgDataUrl !== 'undefined' && customBgDataUrl && bgFile) {
+    if (bgFile) {
+        canvas.style.backgroundImage = `url("textures/orbs/${bgFile}")`;
+        canvas.style.backgroundSize = 'cover';
+    } else {
+        canvas.style.backgroundImage = 'none';
+        canvas.style.backgroundSize = '';
+    }
+    // Clear any custom bg when an orb is chosen
+    if (bgFile && typeof customBgDataUrl !== 'undefined' && customBgDataUrl) {
         customBgDataUrl = null;
         const el = document.getElementById('custom-bg-preview');
         if (el) el.classList.add('hidden');
@@ -683,17 +690,6 @@ document.getElementById('img2blocks-input').onchange = (e) => {
     e.target.value = '';
 };
 
-// Variety slider label updater
-document.getElementById('i2b-variety').oninput = (e) => {
-    const labels = [
-        '🟦 Pixel blocks only (cleanest)',
-        '🟧 + All foreground blocks',
-        '🔶 + Background wall tiles',
-        '🌈 Everything inc. props & water'
-    ];
-    document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
-};
-
 document.getElementById('img2blocks-convert-btn').onclick = () => {
     if (!i2bImgData) { alert('Please upload an image first.'); return; }
 
@@ -702,7 +698,6 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
     const layerChoice = document.getElementById('i2b-layer').value;
-    const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
 
     const statusEl = document.getElementById('i2b-status');
     statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
@@ -717,33 +712,16 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
         const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
 
-        // VARIETY LEVELS:
-        // 1 = Pixel Blocks only (flat solid color, cleanest look)
-        // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
-        // 3 = + textured blocks (soil, stone, wood, metal, etc.)
-        // 4 = everything (props, water, all types)
-        // Filter helpers
-        const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-        const isBlockFolder = (b) => b.folder === 'block';
-        const isPropFolder  = (b) => b.folder === 'prop';
-        const isWallFolder  = (b) => b.folder === 'background';
-        const isWaterFolder = (b) => b.folder === 'water';
-
-        // Build candidate list based on variety
-        // Level 1: only Pixel Blocks (43 flat solid colors — best color accuracy)
-        // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
-        // Level 3: + background wall tiles
-        // Level 4: everything including props and water
+        // Use ALL blocks except _Alt, _Glow, animated frames (non-0), and props/water
+        // (props/water are usually decorative/animated — include blocks + backgrounds for best color coverage)
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
             const frameMatch = b.fileName.match(/_(\d+)\.png$/);
             if (frameMatch && frameMatch[1] !== '0') return false;
-
-            if (variety === 1) return isPixelBlock(b);
-            if (variety === 2) return isPixelBlock(b) || isBlockFolder(b);
-            if (variety === 3) return isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
-            return true; // variety 4: everything
+            // For layer choice: if fg, use blocks; if bg, use background walls
+            if (layerChoice === 'bg') return b.type === 'wall';
+            return b.type !== 'wall' && b.type !== 'water' && b.type !== 'prop';
         });
 
         if (candidateBlocks.length === 0) {
@@ -751,7 +729,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             return;
         }
 
-        statusEl.innerText = `⏳ Variety level ${variety}: sampling ${candidateBlocks.length} blocks...`;
+        statusEl.innerText = `⏳ Sampling ${candidateBlocks.length} blocks...`;
 
         // Sample average color of each block by drawing to a small canvas
         function sampleBlockColor(block) {
@@ -840,9 +818,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const worldX = startX + tx;
                     const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        // Force place on chosen layer regardless of block's native type
-                        const blockCopy = JSON.parse(JSON.stringify(best));
-                        layer[worldX][worldY] = blockCopy;
+                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
                         placed++;
                     }
                 }
