@@ -986,12 +986,11 @@ async function callClaudeForWorld(systemPrompt, userPrompt) {
         method: 'POST',
         headers: { 
            'Content-Type': 'application/json',
-           'x-api-key': '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',
            'anthropic-version': '2023-06-01',
            'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-5',
             max_tokens: 1000,
             system: systemPrompt,
             messages: [{ role: 'user', content: userPrompt }]
