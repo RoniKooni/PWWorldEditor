@@ -986,7 +986,7 @@ async function callClaudeForWorld(systemPrompt, userPrompt) {
         method: 'POST',
         headers: { 
            'Content-Type': 'application/json',
-           'x-api-key': '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',
+           'x-api-key': '',
            'anthropic-version': '2023-06-01',
            'anthropic-dangerous-direct-browser-access': 'true'
         },
