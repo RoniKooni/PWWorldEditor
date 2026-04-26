@@ -984,7 +984,12 @@ function setAIStatus(msg, color = '#a78bfa') {
 async function callClaudeForWorld(systemPrompt, userPrompt) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+           'Content-Type': 'application/json',
+           'x-api-key': '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',
+           'anthropic-version': '2023-06-01',
+           'anthropic-dangerous-direct-browser-access': 'true'
+        },
         body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 1000,
