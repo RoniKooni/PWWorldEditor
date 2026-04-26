@@ -678,6 +678,7 @@ document.getElementById('img2blocks-input').onchange = (e) => {
         preview.innerHTML = `<img src="${i2bImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #444;">`;
         document.getElementById('img2blocks-controls').classList.remove('hidden');
         document.getElementById('i2b-status').innerText = 'Image loaded. Configure settings and convert!';
+        document.getElementById('i2b-block-counter').classList.add('hidden');
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -850,6 +851,71 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                 }
             }
             statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
+
+            // --- Block Counter ---
+            // Count how many of each block was used
+            const blockCounts = {};
+            for (let ty = 0; ty < tileH; ty++) {
+                for (let tx = 0; tx < tileW; tx++) {
+                    const wx = startX + tx, wy = startY + ty;
+                    if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
+                    const cell = layer[wx][wy];
+                    if (!cell) continue;
+                    const key = cell.fileName;
+                    if (!blockCounts[key]) blockCounts[key] = { block: cell, count: 0 };
+                    blockCounts[key].count++;
+                }
+            }
+
+            const sorted = Object.values(blockCounts).sort((a, b) => b.count - a.count);
+            const totalUnique = sorted.length;
+            const totalBlocks = sorted.reduce((s, e) => s + e.count, 0);
+
+            const counterDiv = document.getElementById('i2b-block-counter');
+            const listDiv = document.getElementById('i2b-block-list');
+            const totalLabel = document.getElementById('i2b-total-label');
+
+            totalLabel.innerText = `${totalBlocks} blocks total · ${totalUnique} unique type${totalUnique !== 1 ? 's' : ''}`;
+            listDiv.innerHTML = '';
+
+            sorted.forEach(({ block, count }) => {
+                const uiName = block.fileName
+                    .replace('_0.png', '')
+                    .replace('.png', '')
+                    .replace(/_/g, ' ');
+                const pct = Math.round((count / totalBlocks) * 100);
+
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid #2a2a2a;';
+                row.innerHTML = `
+                    <img src="${block.texture}" style="width:22px;height:22px;image-rendering:pixelated;flex-shrink:0;">
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-size:11px;color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${uiName}">${uiName}</div>
+                        <div style="background:#333;border-radius:2px;height:4px;margin-top:3px;">
+                            <div style="background:#3abdc2;height:4px;border-radius:2px;width:${pct}%;"></div>
+                        </div>
+                    </div>
+                    <span style="font-size:12px;font-weight:bold;color:#fff;flex-shrink:0;">×${count}</span>
+                `;
+                listDiv.appendChild(row);
+            });
+
+            counterDiv.classList.remove('hidden');
+
+            // Copy list button
+            document.getElementById('i2b-copy-list-btn').onclick = () => {
+                const lines = [`Block Shopping List (${totalBlocks} total, ${totalUnique} types)\n`];
+                sorted.forEach(({ block, count }) => {
+                    const name = block.fileName.replace('_0.png','').replace('.png','').replace(/_/g,' ');
+                    lines.push(`${name}: ${count}`);
+                });
+                navigator.clipboard.writeText(lines.join('\n')).then(() => {
+                    const btn = document.getElementById('i2b-copy-list-btn');
+                    btn.innerText = '✓ Copied!';
+                    setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+                });
+            };
+            // --- End Block Counter ---
         }
 
         processBatch();
