@@ -734,9 +734,11 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
         // Level 3: + background wall tiles
         // Level 4: everything including props and water
+        const EXCLUDED_BLOCKS = ['Bedrock.png', 'End Lava.png', 'End Lava Rock.png'];
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
+            if (EXCLUDED_BLOCKS.includes(b.fileName)) return false;
             const frameMatch = b.fileName.match(/_(\d+)\.png$/);
             if (frameMatch && frameMatch[1] !== '0') return false;
 
