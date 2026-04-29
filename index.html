@@ -57,7 +57,6 @@
             <button id="ref-overlay-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_eye.png"><span>Reference</span></button>
             <button id="custom-bg-btn" class="icon-text-btn"><img src="textures/ui/ButtonIcon_orb.png"><span>Custom BG</span></button>
             <button id="img2blocks-btn" class="icon-text-btn"><img src="textures/ui/PaintBrush.png"><span>Img→Blocks</span></button>
-            <button id="ai-world-btn" class="icon-text-btn" style="border-color:#a78bfa;color:#a78bfa;">✨<span>AI World</span></button>
             <input type="file" id="ref-overlay-input" class="hidden" accept="image/*">
             <input type="file" id="custom-bg-input" class="hidden" accept="image/*">
             <input type="file" id="img2blocks-input" class="hidden" accept="image/*">
@@ -177,22 +176,9 @@
                     <option value="bg">Background (walls)</option>
                 </select>
             </div>
-            <div style="margin-bottom:10px;">
-                <label style="font-size:12px;color:#aaa;">Block Variety</label>
-                <input type="range" id="i2b-variety" min="1" max="4" value="1" step="1" style="width:100%">
-                <div id="i2b-variety-label" style="font-size:11px;color:#3abdc2;margin-top:2px;">🟦 Pixel blocks only (cleanest)</div>
-            </div>
             <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
             <div id="i2b-status" style="font-size:11px;color:#3abdc2;text-align:center;"></div>
-            <div id="i2b-block-counter" class="hidden" style="margin-top:12px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                    <span style="font-size:12px;font-weight:bold;color:#fff;">📦 Block Shopping List</span>
-                    <button id="i2b-copy-list-btn" title="Copy list to clipboard" style="background:#3abdc2;color:#111;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px;">Copy</button>
-                </div>
-                <div id="i2b-total-label" style="font-size:11px;color:#aaa;margin-bottom:6px;"></div>
-                <div id="i2b-block-list" style="max-height:220px;overflow-y:auto;border:1px solid #333;border-radius:4px;background:#1a1a1a;"></div>
-            </div>
         </div>
     </div>
 
@@ -208,48 +194,6 @@
         <button id="delete-all-trigger" class="fancy-btn danger">Delete Everything</button>
     </div>
 </div>
-
-    <!-- AI World Generator Popup -->
-    <div id="ai-world-popup" class="hidden menu-popup" style="width:500px;">
-        <div class="popup-header"><h3>✨ AI World Generator</h3><button class="close-btn-fancy">×</button></div>
-        <div style="font-size:13px;color:#aaa;margin-bottom:14px;">Describe a world and AI will build it for you using real in-game blocks.</div>
-
-        <div style="margin-bottom:10px;">
-            <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">World Prompt</label>
-            <textarea id="ai-world-prompt" placeholder="e.g. divine celestial realm with golden clouds and crystal pillars..." style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#fff;border:1px solid #444;border-radius:6px;padding:10px;font-size:13px;resize:vertical;min-height:72px;font-family:inherit;"></textarea>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-            <div>
-                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">Terrain Style</label>
-                <select id="ai-terrain-style" style="width:100%;background:#1a1a1a;color:#fff;border:1px solid #444;padding:6px 8px;border-radius:6px;font-size:12px;">
-                    <option value="natural">Natural (hills + caves)</option>
-                    <option value="flat">Flat / Platform</option>
-                    <option value="floating">Floating Islands</option>
-                    <option value="dungeon">Dungeon / Underground</option>
-                    <option value="skyworld">Sky World</option>
-                </select>
-            </div>
-            <div>
-                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">Layer to Generate</label>
-                <select id="ai-layer" style="width:100%;background:#1a1a1a;color:#fff;border:1px solid #444;padding:6px 8px;border-radius:6px;font-size:12px;">
-                    <option value="both">Both FG + BG</option>
-                    <option value="fg">Foreground only</option>
-                    <option value="bg">Background only</option>
-                </select>
-            </div>
-        </div>
-
-        <div style="margin-bottom:14px;">
-            <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">Depth Complexity</label>
-            <input type="range" id="ai-depth" min="1" max="3" value="2" step="1" style="width:100%">
-            <div id="ai-depth-label" style="font-size:11px;color:#a78bfa;margin-top:2px;">🌊 Surface + Subsurface</div>
-        </div>
-
-        <button id="ai-world-generate-btn" style="width:100%;padding:13px;background:linear-gradient(135deg,#7c3aed,#a78bfa);border:none;color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px;letter-spacing:0.5px;margin-bottom:10px;">✨ Generate World</button>
-        <div id="ai-world-status" style="font-size:11px;color:#a78bfa;text-align:center;min-height:16px;"></div>
-        <div id="ai-world-log" class="hidden" style="margin-top:10px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:10px;max-height:140px;overflow-y:auto;font-size:11px;color:#888;line-height:1.6;"></div>
-    </div>
 
 <script src="asset_list.js"></script>
 <script src="script.js"></script>
