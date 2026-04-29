@@ -115,8 +115,15 @@ function getImg(src) {
 
 function setBackground(bgFile) {
     activeAtmosphere = bgFile;
-    canvas.style.backgroundImage = bgFile ? `url("textures/orbs/${bgFile}")` : 'none';
-    if (typeof customBgDataUrl !== 'undefined' && customBgDataUrl && bgFile) {
+    if (bgFile) {
+        canvas.style.backgroundImage = `url("textures/orbs/${bgFile}")`;
+        canvas.style.backgroundSize = 'cover';
+    } else {
+        canvas.style.backgroundImage = 'none';
+        canvas.style.backgroundSize = '';
+    }
+    // Clear any custom bg when an orb is chosen
+    if (bgFile && typeof customBgDataUrl !== 'undefined' && customBgDataUrl) {
         customBgDataUrl = null;
         const el = document.getElementById('custom-bg-preview');
         if (el) el.classList.add('hidden');
@@ -678,21 +685,9 @@ document.getElementById('img2blocks-input').onchange = (e) => {
         preview.innerHTML = `<img src="${i2bImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #444;">`;
         document.getElementById('img2blocks-controls').classList.remove('hidden');
         document.getElementById('i2b-status').innerText = 'Image loaded. Configure settings and convert!';
-        document.getElementById('i2b-block-counter').classList.add('hidden');
     };
     reader.readAsDataURL(file);
     e.target.value = '';
-};
-
-// Variety slider label updater
-document.getElementById('i2b-variety').oninput = (e) => {
-    const labels = [
-        '🟦 Pixel blocks only (cleanest)',
-        '🟧 + All foreground blocks',
-        '🔶 + Background wall tiles',
-        '🌈 Everything inc. props & water'
-    ];
-    document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
 };
 
 document.getElementById('img2blocks-convert-btn').onclick = () => {
@@ -703,7 +698,6 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
     const layerChoice = document.getElementById('i2b-layer').value;
-    const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
 
     const statusEl = document.getElementById('i2b-status');
     statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
@@ -718,35 +712,16 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         offCtx.drawImage(tempImg, 0, 0, tileW, tileH);
         const pixelData = offCtx.getImageData(0, 0, tileW, tileH).data;
 
-        // VARIETY LEVELS:
-        // 1 = Pixel Blocks only (flat solid color, cleanest look)
-        // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
-        // 3 = + textured blocks (soil, stone, wood, metal, etc.)
-        // 4 = everything (props, water, all types)
-        // Filter helpers
-        const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-        const isBlockFolder = (b) => b.folder === 'block';
-        const isPropFolder  = (b) => b.folder === 'prop';
-        const isWallFolder  = (b) => b.folder === 'background';
-        const isWaterFolder = (b) => b.folder === 'water';
-
-        // Build candidate list based on variety
-        // Level 1: only Pixel Blocks (43 flat solid colors — best color accuracy)
-        // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
-        // Level 3: + background wall tiles
-        // Level 4: everything including props and water
-        const EXCLUDED_BLOCKS = ['Bedrock.png', 'End Lava.png', 'End Lava Rock.png'];
+        // Use ALL blocks except _Alt, _Glow, animated frames (non-0), and props/water
+        // (props/water are usually decorative/animated — include blocks + backgrounds for best color coverage)
         const candidateBlocks = blockLibrary.filter(b => {
             if (b.fileName.includes('_Alt')) return false;
             if (b.fileName.includes('_Glow')) return false;
-            if (EXCLUDED_BLOCKS.includes(b.fileName)) return false;
             const frameMatch = b.fileName.match(/_(\d+)\.png$/);
             if (frameMatch && frameMatch[1] !== '0') return false;
-
-            if (variety === 1) return isPixelBlock(b);
-            if (variety === 2) return isPixelBlock(b) || isBlockFolder(b);
-            if (variety === 3) return isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
-            return true; // variety 4: everything
+            // For layer choice: if fg, use blocks; if bg, use background walls
+            if (layerChoice === 'bg') return b.type === 'wall';
+            return b.type !== 'wall' && b.type !== 'water' && b.type !== 'prop';
         });
 
         if (candidateBlocks.length === 0) {
@@ -754,7 +729,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             return;
         }
 
-        statusEl.innerText = `⏳ Variety level ${variety}: sampling ${candidateBlocks.length} blocks...`;
+        statusEl.innerText = `⏳ Sampling ${candidateBlocks.length} blocks...`;
 
         // Sample average color of each block by drawing to a small canvas
         function sampleBlockColor(block) {
@@ -843,434 +818,15 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const worldX = startX + tx;
                     const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        // Force place on chosen layer regardless of block's native type
-                        const blockCopy = JSON.parse(JSON.stringify(best));
-                        layer[worldX][worldY] = blockCopy;
+                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
                         placed++;
                     }
                 }
             }
             statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
-
-            // --- Block Counter ---
-            // Count how many of each block was used
-            const blockCounts = {};
-            for (let ty = 0; ty < tileH; ty++) {
-                for (let tx = 0; tx < tileW; tx++) {
-                    const wx = startX + tx, wy = startY + ty;
-                    if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
-                    const cell = layer[wx][wy];
-                    if (!cell) continue;
-                    const key = cell.fileName;
-                    if (!blockCounts[key]) blockCounts[key] = { block: cell, count: 0 };
-                    blockCounts[key].count++;
-                }
-            }
-
-            const sorted = Object.values(blockCounts).sort((a, b) => b.count - a.count);
-            const totalUnique = sorted.length;
-            const totalBlocks = sorted.reduce((s, e) => s + e.count, 0);
-
-            const counterDiv = document.getElementById('i2b-block-counter');
-            const listDiv = document.getElementById('i2b-block-list');
-            const totalLabel = document.getElementById('i2b-total-label');
-
-            totalLabel.innerText = `${totalBlocks} blocks total · ${totalUnique} unique type${totalUnique !== 1 ? 's' : ''}`;
-            listDiv.innerHTML = '';
-
-            sorted.forEach(({ block, count }) => {
-                const uiName = block.fileName
-                    .replace('_0.png', '')
-                    .replace('.png', '')
-                    .replace(/_/g, ' ');
-                const pct = Math.round((count / totalBlocks) * 100);
-
-                const row = document.createElement('div');
-                row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid #2a2a2a;';
-                row.innerHTML = `
-                    <img src="${block.texture}" style="width:22px;height:22px;image-rendering:pixelated;flex-shrink:0;">
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-size:11px;color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${uiName}">${uiName}</div>
-                        <div style="background:#333;border-radius:2px;height:4px;margin-top:3px;">
-                            <div style="background:#3abdc2;height:4px;border-radius:2px;width:${pct}%;"></div>
-                        </div>
-                    </div>
-                    <span style="font-size:12px;font-weight:bold;color:#fff;flex-shrink:0;">×${count}</span>
-                `;
-                listDiv.appendChild(row);
-            });
-
-            counterDiv.classList.remove('hidden');
-
-            // Copy list button
-            document.getElementById('i2b-copy-list-btn').onclick = () => {
-                const lines = [`Block Shopping List (${totalBlocks} total, ${totalUnique} types)\n`];
-                sorted.forEach(({ block, count }) => {
-                    const name = block.fileName.replace('_0.png','').replace('.png','').replace(/_/g,' ');
-                    lines.push(`${name}: ${count}`);
-                });
-                navigator.clipboard.writeText(lines.join('\n')).then(() => {
-                    const btn = document.getElementById('i2b-copy-list-btn');
-                    btn.innerText = '✓ Copied!';
-                    setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
-                });
-            };
-            // --- End Block Counter ---
         }
 
         processBatch();
     };
     tempImg.src = i2bImgData;
-};
-
-// ============================================================
-// AI WORLD GENERATOR
-// ============================================================
-
-const bindings2 = { 'ai-world-btn': 'ai-world-popup' };
-document.getElementById('ai-world-btn').onclick = () => openMenu('ai-world-popup');
-document.querySelector('#ai-world-popup .close-btn-fancy').onclick = () => closeAll();
-
-// Depth label updater
-const depthLabels = ['☁️ Surface only', '🌊 Surface + Subsurface', '🌋 Full depth (3 layers)'];
-document.getElementById('ai-depth').oninput = function() {
-    document.getElementById('ai-depth-label').innerText = depthLabels[this.value - 1];
-};
-
-// Build compact block name list for the prompt (to keep token count low)
-function getBlockNamesForPrompt() {
-    const excluded = ['Bedrock', 'End Lava', 'End Lava Rock', 'Air Trampoline', 'Battle Gate',
-        'Battle Lock', 'Battle World Lock', 'Bone Gate', 'Buzzsaw', 'Clan Lock',
-        'Constant Flame Trap', 'Constant Frost Trap', 'Constant Poison Trap',
-        'Dark World Lock', 'Disappearing Block', 'Electric Trap', 'Evil Spike Trap',
-        'Faction Battle Lock', 'Faction Battle World Lock', 'Fire Trap', 'Fireball Shooter Trap',
-        'Fireball Trigger Trap', 'Heart Trap', 'Ice Spike Trap', 'Large Lock', 'Laser Beam Trap',
-        'Laser Trap', 'Medium Lock', 'Newbie Lock', 'PlayNote', 'Platinum Lock', 'Poison Trap',
-        'Small Lock', 'Spike Trap', 'Spike Trigger Trap', 'Slimeball Trap', 'Spring Board',
-        'Heroic Spring Board', 'Bumper', 'Glue Block', 'World Lock'];
-
-    return blockLibrary
-        .filter(b => {
-            if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
-            const m = b.fileName.match(/_(\d+)\.png$/);
-            if (m && m[1] !== '0') return false;
-            const n = b.name;
-            return !excluded.some(ex => n.includes(ex));
-        })
-        .map(b => b.name)
-        .filter((v, i, a) => a.indexOf(v) === i); // unique
-}
-
-function getBgNamesForPrompt() {
-    // Return cleaned background names
-    return ASSET_LIST
-        .filter(a => a.folder === 'background' && !a.file.includes('_Alt'))
-        .map(a => a.file.replace('.png', ''));
-}
-
-function logAI(msg) {
-    const log = document.getElementById('ai-world-log');
-    log.classList.remove('hidden');
-    log.innerHTML += `<div>→ ${msg}</div>`;
-    log.scrollTop = log.scrollHeight;
-}
-
-function setAIStatus(msg, color = '#a78bfa') {
-    const el = document.getElementById('ai-world-status');
-    el.style.color = color;
-    el.innerText = msg;
-}
-
-async function callClaudeForWorld(systemPrompt, userPrompt) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 
-           'Content-Type': 'application/json',
-           'x-api-key': '',
-           'anthropic-version': '2023-06-01',
-           'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-            model: 'claude-sonnet-4-5',
-            max_tokens: 1000,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userPrompt }]
-        })
-    });
-    const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
-    return data.content.map(c => c.text || '').join('');
-}
-
-function parseJSON(text) {
-    const clean = text.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
-}
-
-// Terrain shape generators
-function generateTerrainHeights(style, seed) {
-    const heights = [];
-    let h = 35; // starting ground level (y coord)
-    const rng = mulberry32(seed);
-
-    for (let x = 0; x < GRID_X; x++) {
-        switch (style) {
-            case 'flat':
-                h = 35 + Math.floor(rng() * 2 - 1);
-                break;
-            case 'natural':
-                h += Math.floor(rng() * 5) - 2;
-                h = Math.max(20, Math.min(48, h));
-                break;
-            case 'dungeon':
-                h = 45 + Math.floor(rng() * 3 - 1);
-                break;
-            case 'skyworld':
-                h = 15 + Math.floor(rng() * 4 - 2);
-                break;
-            case 'floating':
-                h = 20 + Math.floor(rng() * 10);
-                break;
-        }
-        heights.push(Math.round(h));
-    }
-    return heights;
-}
-
-function mulberry32(seed) {
-    return function() {
-        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
-        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-        return ((t ^ t >>> 14) >>> 0) / 4294967296;
-    };
-}
-
-function findBlock(name) {
-    return blockLibrary.find(b => b.name === name || b.fileName === name + '.png') || null;
-}
-
-function findBg(fileName) {
-    const fullName = fileName.endsWith('.png') ? fileName : fileName + '.png';
-    return ASSET_LIST.find(a => a.folder === 'background' && a.file === fullName) || null;
-}
-
-document.getElementById('ai-world-generate-btn').onclick = async () => {
-    const prompt = document.getElementById('ai-world-prompt').value.trim();
-    if (!prompt) { alert('Please enter a world description!'); return; }
-
-    const terrainStyle = document.getElementById('ai-terrain-style').value;
-    const layerChoice = document.getElementById('ai-layer').value;
-    const depth = parseInt(document.getElementById('ai-depth').value);
-
-    const btn = document.getElementById('ai-world-generate-btn');
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-    btn.innerText = '⏳ Generating...';
-
-    document.getElementById('ai-world-log').classList.add('hidden');
-    document.getElementById('ai-world-log').innerHTML = '';
-
-    const blockNames = getBlockNamesForPrompt();
-    const bgNames = getBgNamesForPrompt();
-
-    try {
-        // ── STEP 1: Get theme decisions from Claude ──────────────────────
-        setAIStatus('🔮 Asking AI to design your world theme...');
-        logAI('Sending theme request to Claude...');
-
-        const themeSystem = `You are a Pixel Worlds game world designer. You ONLY respond with valid JSON. No explanation, no markdown fences, just raw JSON.`;
-
-        const themeUser = `Design a world theme for: "${prompt}"
-Terrain style: ${terrainStyle}
-
-Available background walls (pick 1-3, use EXACT filenames): ${bgNames.slice(0, 120).join('|')}
-Available sky orbs: Star, Night, City, Forest, Alien, Candy, Cemetery, Sand, Summer Sky, Winter, None
-Available foreground blocks (pick surface, subsurface, deep blocks — use EXACT names): ${blockNames.slice(0, 120).join('|')}
-
-Respond with ONLY this JSON (no markdown):
-{
-  "atmosphere": "Star",
-  "bgWalls": ["StoneBrickWall", "CaveWall"],
-  "surfaceBlock": "Marble",
-  "surfaceTopBlock": "Granite",
-  "subBlock": "Dark Stone Block 1",
-  "deepBlock": "Obisidian",
-  "accentBlock": "Gold Block",
-  "propHints": "crystal pillars, golden torches",
-  "colorMood": "golden divine light"
-}`;
-
-        const themeRaw = await callClaudeForWorld(themeSystem, themeUser);
-        const theme = parseJSON(themeRaw);
-        logAI(`Theme: ${theme.colorMood} | Sky: ${theme.atmosphere}`);
-        logAI(`Blocks: surface=${theme.surfaceBlock}, sub=${theme.subBlock}, deep=${theme.deepBlock}`);
-
-        // ── STEP 2: Get layer layout from Claude ─────────────────────────
-        setAIStatus('🗺️ Planning world layout...');
-        logAI('Getting layout structure from Claude...');
-
-        const layoutSystem = `You are a Pixel Worlds game world layout generator. You ONLY respond with valid JSON arrays.`;
-
-        // For layout, we describe layers as zone heights (not per-tile to save tokens)
-        // World is 80x60. Row 0 = top, Row 59 = bottom.
-        const layoutUser = `World: "${prompt}", terrain: ${terrainStyle}, depth layers: ${depth}
-Theme: ${JSON.stringify(theme)}
-
-Describe the vertical layers as zones. Respond ONLY with JSON:
-{
-  "skyStart": 0,
-  "skyEnd": 10,
-  "surfaceStart": 11,
-  "surfaceEnd": 20,
-  "subStart": 21,
-  "subEnd": 35,
-  "deepStart": 36,
-  "deepEnd": 55,
-  "caveChance": 0.15,
-  "floatingIslands": false,
-  "floatingIslandY": 8,
-  "floatingIslandCount": 4
-}`;
-
-        const layoutRaw = await callClaudeForWorld(layoutSystem, layoutUser);
-        const layout = parseJSON(layoutRaw);
-        logAI(`Layout: surface rows ${layout.surfaceStart}-${layout.surfaceEnd}, deep ${layout.deepStart}-${layout.deepEnd}`);
-
-        // ── STEP 3: Build the actual world ───────────────────────────────
-        setAIStatus('🔨 Building world blocks...');
-        logAI('Generating terrain...');
-
-        saveHistory();
-
-        // Set atmosphere
-        const atmOrb = backgroundLibrary.find(b => b.name === theme.atmosphere);
-        if (atmOrb) setBackground(atmOrb.file);
-
-        // Get block references
-        const surfBlock = findBlock(theme.surfaceBlock) || findBlock('Marble') || blockLibrary[0];
-        const surfTopBlock = findBlock(theme.surfaceTopBlock) || surfBlock;
-        const subBlock = findBlock(theme.subBlock) || findBlock('Dark Stone Block 1') || surfBlock;
-        const deepBlock = findBlock(theme.deepBlock) || findBlock('Obisidian') || subBlock;
-        const accentBlock = findBlock(theme.accentBlock) || surfBlock;
-
-        const bgBlock1 = theme.bgWalls[0] ? findBg(theme.bgWalls[0]) : null;
-        const bgBlock2 = theme.bgWalls[1] ? findBg(theme.bgWalls[1]) : bgBlock1;
-
-        // Generate terrain heights
-        const seed = Date.now() & 0xFFFFFF;
-        const heights = generateTerrainHeights(terrainStyle, seed);
-        const rng = mulberry32(seed + 1);
-
-        const doBg = layerChoice === 'both' || layerChoice === 'bg';
-        const doFg = layerChoice === 'both' || layerChoice === 'fg';
-
-        // Clear existing (except bedrock rows 57-59)
-        for (let x = 0; x < GRID_X; x++) {
-            for (let y = 0; y < 57; y++) {
-                if (doFg) fgData[x][y] = null;
-                if (doBg) bgData[x][y] = null;
-            }
-        }
-
-        function place(layer, x, y, block) {
-            if (x < 0 || x >= GRID_X || y < 0 || y >= 57 || !block) return;
-            layer[x][y] = JSON.parse(JSON.stringify(block));
-        }
-
-        function makeBgEntry(assetEntry) {
-            if (!assetEntry) return null;
-            return {
-                name: assetEntry.file.replace('.png','').replace(/_/g,' '),
-                fileName: assetEntry.file,
-                type: 'wall',
-                texture: `${BASE_PATH}background/${assetEntry.file}`,
-                folder: 'background'
-            };
-        }
-
-        const bg1Obj = bgBlock1 ? makeBgEntry(bgBlock1) : null;
-        const bg2Obj = bgBlock2 ? makeBgEntry(bgBlock2) : null;
-
-        for (let x = 0; x < GRID_X; x++) {
-            const groundY = heights[x];
-
-            for (let y = 0; y < 57; y++) {
-                const isUnderground = y >= groundY;
-                const isSurface = y === groundY;
-                const isTop = y === groundY - 1;
-                const isSub = y > groundY && y <= groundY + 8;
-                const isDeep = y > groundY + 8;
-
-                // Cave carving
-                const isCave = isUnderground && !isSurface &&
-                    rng() < (layout.caveChance || 0.12) &&
-                    y < groundY + 25;
-
-                // Foreground
-                if (doFg && isUnderground && !isCave) {
-                    let block = deepBlock;
-                    if (isSurface) block = surfTopBlock;
-                    else if (isSub) block = (rng() < 0.08 ? accentBlock : subBlock);
-                    else if (isDeep) block = (rng() < 0.04 ? accentBlock : deepBlock);
-                    place(fgData, x, y, block);
-                }
-
-                // Background walls
-                if (doBg) {
-                    if (isUnderground || y > groundY - 3) {
-                        const bgObj = (y > groundY + 12 && bg2Obj) ? bg2Obj : bg1Obj;
-                        if (bgObj) place(bgData, x, y, bgObj);
-                    }
-                }
-            }
-
-            // Floating islands
-            if (terrainStyle === 'floating' || layout.floatingIslands) {
-                const islandY = layout.floatingIslandY || 8;
-                const islandCount = layout.floatingIslandCount || 4;
-                const islandWidth = Math.floor(GRID_X / islandCount);
-                const islandIdx = Math.floor(x / islandWidth);
-                const islandCenter = islandIdx * islandWidth + Math.floor(islandWidth / 2);
-                const dist = Math.abs(x - islandCenter);
-                const islandHalfW = Math.floor(islandWidth * 0.35);
-                if (dist <= islandHalfW && doFg) {
-                    const iy = islandY + Math.floor(rng() * 3);
-                    place(fgData, x, iy, surfTopBlock);
-                    place(fgData, x, iy + 1, surfBlock);
-                    place(fgData, x, iy + 2, subBlock);
-                }
-            }
-        }
-
-        // Sky world: no solid ground, only platforms
-        if (terrainStyle === 'skyworld' && doFg) {
-            for (let x = 0; x < GRID_X; x++) {
-                for (let y = 0; y < 57; y++) fgData[x][y] = null;
-            }
-            for (let i = 0; i < 12; i++) {
-                const px = Math.floor(rng() * (GRID_X - 8));
-                const py = Math.floor(rng() * 35) + 5;
-                const pw = Math.floor(rng() * 10) + 4;
-                for (let dx = 0; dx < pw; dx++) {
-                    place(fgData, px + dx, py, surfTopBlock);
-                    place(fgData, px + dx, py + 1, surfBlock);
-                    if (depth >= 2) place(fgData, px + dx, py + 2, subBlock);
-                }
-            }
-        }
-
-        logAI(`✅ World built! Atmosphere: ${theme.atmosphere}`);
-        logAI(`Props hint: ${theme.propHints}`);
-        setAIStatus(`✅ World generated! (Tip: ${theme.propHints})`, '#4ade80');
-
-    } catch (err) {
-        console.error(err);
-        setAIStatus('❌ Error: ' + err.message, '#f87171');
-        logAI('Error: ' + err.message);
-    } finally {
-        btn.disabled = false;
-        btn.style.opacity = '1';
-        btn.innerText = '✨ Generate World';
-    }
 };
