@@ -188,6 +188,18 @@
                 </label>
                 <div style="font-size:11px;color:#666;margin-top:3px;padding-left:24px;">Lays the image sideways — swap W/H for best fit</div>
             </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">🎨 Contrast <span id="i2b-contrast-val">1.4</span>×</label>
+                <input type="range" id="i2b-contrast" min="0.8" max="3.0" step="0.05" value="1.4" style="width:100%;"
+                    oninput="document.getElementById('i2b-contrast-val').innerText=parseFloat(this.value).toFixed(2)">
+                <div style="font-size:10px;color:#555;margin-top:2px;">Higher = darker darks, brighter brights → more distinct block mapping</div>
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">🌈 Saturation <span id="i2b-saturation-val">1.6</span>×</label>
+                <input type="range" id="i2b-saturation" min="0.5" max="4.0" step="0.05" value="1.6" style="width:100%;"
+                    oninput="document.getElementById('i2b-saturation-val').innerText=parseFloat(this.value).toFixed(2)">
+                <div style="font-size:10px;color:#555;margin-top:2px;">Higher = more vivid colors → hair vs skin vs shadow use different blocks</div>
+            </div>
             <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
             <div id="i2b-status" style="font-size:11px;color:#3abdc2;text-align:center;"></div>
