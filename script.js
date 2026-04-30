@@ -730,7 +730,45 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         } else {
             offCtx.drawImage(tempImg, 0, 0, outW, outH);
         }
-        const pixelData = offCtx.getImageData(0, 0, outW, outH).data;
+        const rawPixelData = offCtx.getImageData(0, 0, outW, outH).data;
+
+        // ── Pre-processing: contrast + saturation boost ──────────────────────
+        // With only 43 palette colors, close colors in the source (e.g. blonde hair
+        // vs skin tone) map to the same block. Boosting contrast and saturation
+        // pushes similar colors apart so they land on distinct palette entries —
+        // giving proper pixel-art depth and visible detail.
+        const contrastBoost = parseFloat(document.getElementById('i2b-contrast').value) || 1.4;
+        const satBoost = parseFloat(document.getElementById('i2b-saturation').value) || 1.6;
+
+        const pixelData = new Uint8ClampedArray(rawPixelData.length);
+        for (let i = 0; i < rawPixelData.length; i += 4) {
+            let r = rawPixelData[i] / 255;
+            let g = rawPixelData[i+1] / 255;
+            let b = rawPixelData[i+2] / 255;
+            const a = rawPixelData[i+3];
+
+            // 1. Contrast: S-curve around 0.5
+            r = (r - 0.5) * contrastBoost + 0.5;
+            g = (g - 0.5) * contrastBoost + 0.5;
+            b = (b - 0.5) * contrastBoost + 0.5;
+            r = Math.max(0, Math.min(1, r));
+            g = Math.max(0, Math.min(1, g));
+            b = Math.max(0, Math.min(1, b));
+
+            // 2. Saturation boost in RGB-space (desaturate then lerp)
+            const lum = 0.299*r + 0.587*g + 0.114*b;
+            r = lum + (r - lum) * satBoost;
+            g = lum + (g - lum) * satBoost;
+            b = lum + (b - lum) * satBoost;
+            r = Math.max(0, Math.min(1, r));
+            g = Math.max(0, Math.min(1, g));
+            b = Math.max(0, Math.min(1, b));
+
+            pixelData[i]   = Math.round(r * 255);
+            pixelData[i+1] = Math.round(g * 255);
+            pixelData[i+2] = Math.round(b * 255);
+            pixelData[i+3] = a;
+        }
 
         // VARIETY LEVELS:
         // 1 = Pixel Blocks only (flat solid color, cleanest look)
