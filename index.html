@@ -170,16 +170,11 @@
                 <label style="font-size:12px;color:#aaa;">Height (tiles)</label>
                 <input type="number" id="i2b-h" value="15" min="1" max="60" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
             </div>
-            <div style="margin-bottom:6px;font-size:12px;color:#aaa;">Block layer: 
-                <select id="i2b-layer" style="background:#222;color:#fff;border:1px solid #444;padding:2px 4px;border-radius:4px;">
-                    <option value="fg">Foreground (blocks)</option>
-                    <option value="bg">Background (walls)</option>
-                </select>
-            </div>
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;color:#aaa;">Block Variety</label>
+                <label style="font-size:12px;color:#aaa;">Art Mode / Block Variety</label>
                 <input type="range" id="i2b-variety" min="1" max="4" value="1" step="1" style="width:100%">
-                <div id="i2b-variety-label" style="font-size:11px;color:#3abdc2;margin-top:2px;">🟦 Pixel blocks only (cleanest)</div>
+                <div id="i2b-variety-label" style="font-size:11px;color:#3abdc2;margin-top:2px;">🟦 Pixel blocks only — clean pixel art mode</div>
+                <div style="font-size:10px;color:#666;margin-top:3px;">Modes 2–4 use dual FG+BG layers with 3-tier depth shading</div>
             </div>
             <div style="margin-bottom:10px;">
                 <label style="font-size:12px;color:#aaa;display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -187,18 +182,6 @@
                     <span>🔄 Rotate 90° (for tall/portrait images)</span>
                 </label>
                 <div style="font-size:11px;color:#666;margin-top:3px;padding-left:24px;">Lays the image sideways — swap W/H for best fit</div>
-            </div>
-            <div style="margin-bottom:10px;">
-                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">🎨 Contrast <span id="i2b-contrast-val">1.4</span>×</label>
-                <input type="range" id="i2b-contrast" min="0.8" max="3.0" step="0.05" value="1.4" style="width:100%;"
-                    oninput="document.getElementById('i2b-contrast-val').innerText=parseFloat(this.value).toFixed(2)">
-                <div style="font-size:10px;color:#555;margin-top:2px;">Higher = darker darks, brighter brights → more distinct block mapping</div>
-            </div>
-            <div style="margin-bottom:10px;">
-                <label style="font-size:12px;color:#aaa;display:block;margin-bottom:4px;">🌈 Saturation <span id="i2b-saturation-val">1.6</span>×</label>
-                <input type="range" id="i2b-saturation" min="0.5" max="4.0" step="0.05" value="1.6" style="width:100%;"
-                    oninput="document.getElementById('i2b-saturation-val').innerText=parseFloat(this.value).toFixed(2)">
-                <div style="font-size:10px;color:#555;margin-top:2px;">Higher = more vivid colors → hair vs skin vs shadow use different blocks</div>
             </div>
             <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
