@@ -704,7 +704,6 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const layerChoice = document.getElementById('i2b-layer').value;
     const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
     const doFlip = document.getElementById('i2b-flip').checked;
-    const doShading = document.getElementById('i2b-shading').checked;
 
     // Effective output dimensions after optional 90° rotation
     const outW = doFlip ? tileH : tileW;
@@ -832,49 +831,10 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             const layer = layerChoice === 'bg' ? bgData : fgData;
             let placed = 0;
 
-            // ── Pixel-art shading setup ──────────────────────────────────────────
-            // When variety=1 and shading is on, group pixel blocks by hue family,
-            // then for each tile pick the family member whose luminance best matches
-            // the local pixel brightness with Bayer dithering for ordered-dither detail.
-            const useShading = doShading && variety === 1 && palette.length > 1;
-
-            // Build hue-family groups for shading
-            let shadingFamilies = null;
-            if (useShading) {
-                const toHSL = (r,g,b) => {
-                    r/=255; g/=255; b/=255;
-                    const max=Math.max(r,g,b), min=Math.min(r,g,b), l=(max+min)/2;
-                    if (max===min) return {h:0,s:0,l};
-                    const d=max-min, s=d/(l>0.5?2-max-min:max+min);
-                    let h=0;
-                    if(max===r) h=(g-b)/d+(g<b?6:0);
-                    else if(max===g) h=(b-r)/d+2;
-                    else h=(r-g)/d+4;
-                    return {h:h*60,s,l};
-                };
-                const families = {};
-                for (const entry of palette) {
-                    const {h,s,l} = toHSL(entry.r, entry.g, entry.b);
-                    const bucket = s < 0.12 ? 'grey' : `h${Math.round(h/30)}`;
-                    if (!families[bucket]) families[bucket] = [];
-                    families[bucket].push({...entry, hsl:{h,s,l}});
-                }
-                for (const fam of Object.values(families)) {
-                    fam.sort((a,b) => a.lum - b.lum);
-                }
-                shadingFamilies = families;
-            }
-
-            // Bayer 4×4 ordered dither matrix, scaled to ±30 luminance offset
-            const bayer4 = [
-                [ 0,  8,  2, 10],
-                [12,  4, 14,  6],
-                [ 3, 11,  1,  9],
-                [15,  7, 13,  5]
-            ];
-            const bayerDither = (tx, ty) => (bayer4[ty % 4][tx % 4] / 15 - 0.5) * 60;
-
-            // Color matching cache (quantize to nearest 8 to reduce lookups)
+            // Pure perceptual color matching — no dithering.
+            // Each pixel maps cleanly to whichever palette block is the closest color.
+            // Dark pixels get dark blocks, bright pixels get bright blocks: clean shading.
+            // Finer quantize key (>>2 = steps of 4) gives smoother gradient transitions.
             const colorCache = {};
 
             for (let ty = 0; ty < outH; ty++) {
@@ -886,66 +846,29 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const a = pixelData[pi+3];
                     if (a < 64) continue;
 
-                    let best;
-
-                    if (useShading && shadingFamilies) {
-                        // Step 1: find nearest palette entry by color (hue/chroma match)
-                        const key = `${r>>3},${g>>3},${b>>3}`;
-                        let baseEntry = colorCache[key];
-                        if (!baseEntry) {
-                            let bestDist = Infinity;
-                            for (const entry of palette) {
-                                const dr = r-entry.r, dg = g-entry.g, db = b-entry.b;
-                                const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                                if (dist < bestDist) { bestDist = dist; baseEntry = entry; }
-                            }
-                            colorCache[key] = baseEntry;
+                    const key = `${r>>2},${g>>2},${b>>2}`;
+                    let best = colorCache[key];
+                    if (!best) {
+                        let bestDist = Infinity;
+                        for (const entry of palette) {
+                            const dr = r - entry.r;
+                            const dg = g - entry.g;
+                            const db = b - entry.b;
+                            const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                            if (dist < bestDist) { bestDist = dist; best = entry.block; }
                         }
-                        // Step 2: apply Bayer dither to pixel luminance
-                        const pixLum = 0.299*r + 0.587*g + 0.114*b;
-                        const ditheredLum = pixLum + bayerDither(tx, ty);
-                        // Step 3: find which family the matched block belongs to
-                        let chosenFamily = null;
-                        for (const fam of Object.values(shadingFamilies)) {
-                            if (fam.some(e => e.block === baseEntry.block)) {
-                                chosenFamily = fam; break;
-                            }
-                        }
-                        if (chosenFamily && chosenFamily.length > 1) {
-                            let bestLumDiff = Infinity;
-                            for (const entry of chosenFamily) {
-                                const diff = Math.abs(entry.lum - ditheredLum);
-                                if (diff < bestLumDiff) { bestLumDiff = diff; best = entry.block; }
-                            }
-                        } else {
-                            best = baseEntry.block;
-                        }
-                    } else {
-                        // Standard color matching (no shading)
-                        const key = `${r>>3},${g>>3},${b>>3}`;
-                        best = colorCache[key];
-                        if (!best) {
-                            let bestDist = Infinity;
-                            for (const entry of palette) {
-                                const dr = r-entry.r, dg = g-entry.g, db = b-entry.b;
-                                const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                                if (dist < bestDist) { bestDist = dist; best = entry.block; }
-                            }
-                            colorCache[key] = best;
-                        }
+                        colorCache[key] = best;
                     }
 
                     const worldX = startX + tx;
                     const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        const blockCopy = JSON.parse(JSON.stringify(best));
-                        layer[worldX][worldY] = blockCopy;
+                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
                         placed++;
                     }
                 }
             }
-            const shadingNote = useShading ? ' with pixel-art shading ✨' : '';
-            statusEl.innerText = `✅ Done! Placed ${placed} blocks${shadingNote} using ${palette.length} colors.`;
+            statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
         }
 
         processBatch();
