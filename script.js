@@ -895,19 +895,18 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const edge = edgeMap[idx];
 
                     let sr, sg, sb;
-                    if (normLum < 0.30) {
-                        // Dark pixel — match color directly
+                    if (normLum < 0.25) {
+                        // Very dark pixel — match color directly, no shading
                         sr = r; sg = g; sb = b;
                     } else {
-                        // Mid/bright — shade based on edge strength + how far from max brightness
-                        // Pixels near max brightness with strong edges get darkest shade
-                        const brightnessFromTop = 1.0 - normLum; // 0=very bright, 1=mid
-                        const shadeFactor = brightnessFromTop * 0.50 + edge * 0.50;
+                        // Shade based mostly on pixel brightness, edges barely contribute
+                        // LOW edge weight (0.10) so smooth anime/art doesn't get grey'd out
+                        const shadeFactor = (1.0 - normLum) * 0.90 + edge * 0.10;
                         let tier;
-                        if      (shadeFactor < 0.20) tier = 0; // pure highlight
-                        else if (shadeFactor < 0.45) tier = 1; // soft shadow
-                        else if (shadeFactor < 0.70) tier = 2; // shadow
-                        else                         tier = 3; // deep shadow on edges
+                        if      (shadeFactor < 0.30) tier = 0; // highlight
+                        else if (shadeFactor < 0.55) tier = 1; // midtone
+                        else if (shadeFactor < 0.78) tier = 2; // shadow
+                        else                         tier = 3; // deep shadow
                         const m = SHADE_MUL[tier];
                         sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
                     }
