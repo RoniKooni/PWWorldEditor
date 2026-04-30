@@ -891,19 +891,27 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const lum = lumMap[idx];
                     if (lum < 0) continue;
 
-                    // 0=bright pixel, 1=dark pixel
-                    const normLum = 1.0 - (lum - minLum) / lumRange;
+                    // Only shade mid/bright pixels. Dark pixels match color directly.
+                    // normLum: 0=darkest, 1=brightest in image
+                    const normLum = (lum - minLum) / lumRange;
                     const edge = edgeMap[idx];
-                    const darkFactor = normLum * 0.70 + edge * 0.30;
 
-                    let tier;
-                    if      (darkFactor < 0.25) tier = 0;
-                    else if (darkFactor < 0.50) tier = 1;
-                    else if (darkFactor < 0.75) tier = 2;
-                    else                        tier = 3;
-
-                    const m = SHADE_MUL[tier];
-                    const sr = Math.round(r * m), sg = Math.round(g * m), sb = Math.round(b * m);
+                    let sr, sg, sb;
+                    if (normLum < 0.35) {
+                        // Dark pixel — match color directly, no shading
+                        sr = r; sg = g; sb = b;
+                    } else {
+                        // Mid/bright pixel — apply shading based on brightness + edges
+                        // Brighter pixels get lighter shade, edges get darker
+                        const shadeFactor = (1.0 - normLum) * 0.60 + edge * 0.40;
+                        let tier;
+                        if      (shadeFactor < 0.25) tier = 0;
+                        else if (shadeFactor < 0.50) tier = 1;
+                        else if (shadeFactor < 0.75) tier = 2;
+                        else                         tier = 3;
+                        const m = SHADE_MUL[tier];
+                        sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
+                    }
 
                     const key = `${sr>>2},${sg>>2},${sb>>2}`;
                     if (!colorCache[key]) colorCache[key] = findClosest(sr, sg, sb);
