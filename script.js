@@ -971,3 +971,126 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     };
     tempImg.src = i2bImgData;
 };
+
+// ============================================================
+// FEATURE: Block Counter
+// ============================================================
+document.getElementById('block-counter-btn').onclick = () => openMenu('block-counter-popup');
+
+function runBlockCount() {
+    const layer = document.getElementById('bc-layer').value;
+    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
+
+    // Tally all blocks
+    const counts = {}; // name → { block, count }
+
+    const tally = (data) => {
+        for (let x = 0; x < GRID_X; x++) {
+            for (let y = 0; y < GRID_Y; y++) {
+                const b = data[x][y];
+                if (!b) continue;
+                const key = b.name;
+                if (!counts[key]) counts[key] = { block: b, count: 0 };
+                counts[key].count++;
+            }
+        }
+    };
+
+    if (layer === 'both' || layer === 'fg') tally(fgData);
+    if (layer === 'both' || layer === 'bg') tally(bgData);
+
+    const entries = Object.values(counts).sort((a, b) => b.count - a.count);
+    const total = entries.reduce((s, e) => s + e.count, 0);
+    const unique = entries.length;
+    const totalStacks = entries.reduce((s, e) => s + Math.ceil(e.count / stackSize), 0);
+
+    // Summary bar
+    document.getElementById('bc-total').innerText = total.toLocaleString();
+    document.getElementById('bc-unique').innerText = unique;
+    document.getElementById('bc-stacks').innerText = totalStacks.toLocaleString();
+    document.getElementById('bc-summary').style.display = 'block';
+    document.getElementById('bc-search').style.display = 'block';
+
+    // Render list
+    renderBlockCountList(entries, stackSize);
+
+    // Store for search
+    document.getElementById('bc-search').dataset.entries = JSON.stringify(
+        entries.map(e => ({ name: e.block.name, texture: e.block.texture, count: e.count }))
+    );
+    document.getElementById('bc-search').value = '';
+}
+
+function renderBlockCountList(entries, stackSize) {
+    const list = document.getElementById('bc-list');
+    if (entries.length === 0) {
+        list.innerHTML = '<div style="color:#555;text-align:center;padding:20px;">No blocks found.</div>';
+        return;
+    }
+
+    list.innerHTML = entries.map((e, i) => {
+        const stacks = Math.floor(e.count / stackSize);
+        const remainder = e.count % stackSize;
+        const stackStr = stacks > 0
+            ? `<span style="color:#c97aff;">${stacks} stack${stacks !== 1 ? 's' : ''}</span>${remainder > 0 ? ` + <span style="color:#aaa;">${remainder}</span>` : ''}`
+            : `<span style="color:#aaa;">${remainder}</span>`;
+
+        return `<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:4px;background:${i%2===0?'#1a1a1a':'#151515'};margin-bottom:2px;">
+            <img src="${e.block.texture}" style="width:28px;height:28px;image-rendering:pixelated;border-radius:3px;flex-shrink:0;">
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.block.name}</div>
+                <div style="font-size:11px;margin-top:1px;">${stackStr}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0;">
+                <div style="font-size:13px;color:#3abdc2;font-weight:bold;">${e.count.toLocaleString()}</div>
+                <div style="font-size:10px;color:#555;">blocks</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+document.getElementById('bc-count-btn').onclick = runBlockCount;
+
+document.getElementById('bc-stack-size').oninput = () => {
+    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
+    const raw = document.getElementById('bc-search').dataset.entries;
+    if (!raw) return;
+    const entries = JSON.parse(raw).map(e => ({ block: { name: e.name, texture: e.texture }, count: e.count }));
+    const totalStacks = entries.reduce((s, e) => s + Math.ceil(e.count / stackSize), 0);
+    document.getElementById('bc-stacks').innerText = totalStacks.toLocaleString();
+    const term = document.getElementById('bc-search').value.toLowerCase();
+    const filtered = term ? entries.filter(e => e.block.name.toLowerCase().includes(term)) : entries;
+    renderBlockCountList(filtered, stackSize);
+};
+
+document.getElementById('bc-search').oninput = (ev) => {
+    const term = ev.target.value.toLowerCase();
+    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
+    const raw = ev.target.dataset.entries;
+    if (!raw) return;
+    const entries = JSON.parse(raw).map(e => ({ block: { name: e.name, texture: e.texture }, count: e.count }));
+    const filtered = term ? entries.filter(e => e.block.name.toLowerCase().includes(term)) : entries;
+    renderBlockCountList(filtered, stackSize);
+};
+
+document.getElementById('bc-copy-btn').onclick = () => {
+    const raw = document.getElementById('bc-search').dataset.entries;
+    if (!raw) { alert('Click "Count Blocks" first!'); return; }
+    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
+    const entries = JSON.parse(raw);
+    const total = entries.reduce((s, e) => s + e.count, 0);
+    const lines = [
+        `Block Counter — Total: ${total.toLocaleString()} blocks (${entries.length} types)`,
+        `Stack size: ${stackSize}`,
+        ``,
+        ...entries.map(e => {
+            const stacks = Math.floor(e.count / stackSize);
+            const rem = e.count % stackSize;
+            const stackStr = stacks > 0 ? `${stacks}s${rem > 0 ? ` +${rem}` : ''}` : `${rem}`;
+            return `${e.name}: ${e.count} (${stackStr})`;
+        })
+    ];
+    navigator.clipboard.writeText(lines.join('\n'))
+        .then(() => { document.getElementById('bc-copy-btn').innerText = '✅ Copied!'; setTimeout(() => document.getElementById('bc-copy-btn').innerText = '📋 Copy List', 2000); })
+        .catch(() => alert('Copy failed — try manually.'));
+};
