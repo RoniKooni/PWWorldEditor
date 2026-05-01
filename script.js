@@ -805,93 +805,78 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
     batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks...', (palette) => {
         if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
 
-        statusEl.innerText = `⚡ Placing shaded pixel blocks with ${palette.length} colors...`;
+        statusEl.innerText = `⚡ Placing dithered pixel blocks with ${palette.length} colors...`;
         saveHistory();
 
-        // ── Global luminance range ──
-        const lumMap = new Float32Array(outW * outH);
+        // ── Copy pixel data into float error-diffusion buffer ──
+        // We work on R, G, B channels separately with accumulated error.
+        // This is Floyd-Steinberg dithering — it spreads the color quantisation
+        // error to neighbouring pixels so the overall colour average is preserved,
+        // giving the mixed/painterly look seen in the reference image.
+        const buf = new Float32Array(outW * outH * 3);
         for (let i = 0; i < outW * outH; i++) {
             const pi = i * 4;
-            if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
-            lumMap[i] = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
+            buf[i*3+0] = pixelData[pi+0];
+            buf[i*3+1] = pixelData[pi+1];
+            buf[i*3+2] = pixelData[pi+2];
         }
-        let minLum = 255, maxLum = 0;
-        for (let i = 0; i < lumMap.length; i++) {
-            if (lumMap[i] < 0) continue;
-            if (lumMap[i] < minLum) minLum = lumMap[i];
-            if (lumMap[i] > maxLum) maxLum = lumMap[i];
-        }
-        const lumRange = Math.max(maxLum - minLum, 1);
 
-        // ── Sobel edge map ──
-        const edgeMap = new Float32Array(outW * outH);
-        for (let ty = 1; ty < outH-1; ty++) {
-            for (let tx = 1; tx < outW-1; tx++) {
-                const idx = ty*outW+tx;
-                if (lumMap[idx] < 0) continue;
-                const tl=lumMap[(ty-1)*outW+(tx-1)], t=lumMap[(ty-1)*outW+tx], tr2=lumMap[(ty-1)*outW+(tx+1)];
-                const ml=lumMap[ty*outW+(tx-1)], mr=lumMap[ty*outW+(tx+1)];
-                const bl=lumMap[(ty+1)*outW+(tx-1)], b2=lumMap[(ty+1)*outW+tx], br=lumMap[(ty+1)*outW+(tx+1)];
-                const gx = -tl - 2*ml - bl + tr2 + 2*mr + br;
-                const gy = -tl - 2*t  - tr2 + bl + 2*b2 + br;
-                edgeMap[idx] = Math.sqrt(gx*gx + gy*gy);
-            }
-        }
-        let maxEdge = 1;
-        for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
-        for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
-
-        // ── Shade tiers: search for closest block to darkened color ──
-        // Tier 0 (highlight): color × 1.0
-        // Tier 1 (midtone):   color × 0.72
-        // Tier 2 (shadow):    color × 0.48
-        // Tier 3 (deep):      skip FG entirely (leave empty)
-        const SHADE_MULT = [1.0, 0.72, 0.48];
-        const shadeCache = {};
-        function getShadedBlock(r, g, b, tier) {
-            const key = `${r>>2},${g>>2},${b>>2},${tier}`;
-            if (shadeCache[key] !== undefined) return shadeCache[key];
-            const m = SHADE_MULT[tier];
-            const best = findClosestBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), palette);
-            shadeCache[key] = best ? best.block : null;
-            return shadeCache[key];
+        const colorCache = {};
+        function quantize(r, g, b) {
+            // clamp
+            r = Math.max(0, Math.min(255, Math.round(r)));
+            g = Math.max(0, Math.min(255, Math.round(g)));
+            b = Math.max(0, Math.min(255, Math.round(b)));
+            const key = `${r>>1},${g>>1},${b>>1}`;
+            if (colorCache[key]) return colorCache[key];
+            const best = findClosestBlock(r, g, b, palette);
+            colorCache[key] = best;
+            return best;
         }
 
         let placed = 0;
         for (let ty = 0; ty < outH; ty++) {
             for (let tx = 0; tx < outW; tx++) {
                 const pi = (ty * outW + tx) * 4;
-                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
-                if (a < 64) continue;
+                if (pixelData[pi+3] < 64) continue;
 
                 const idx = ty * outW + tx;
-                const lum = lumMap[idx];
-                if (lum < 0) continue;
+                const r = buf[idx*3+0];
+                const g = buf[idx*3+1];
+                const b = buf[idx*3+2];
 
-                // darkFactor: 0 = brightest pixel in image, 1 = darkest
-                const normLum = 1.0 - (lum - minLum) / lumRange;
-                const edgeStr = edgeMap[idx];
-                const darkFactor = normLum * 0.70 + edgeStr * 0.30;
+                // Find closest palette block to current (error-adjusted) color
+                const match = quantize(r, g, b);
+                if (!match) continue;
 
-                // Tier 3 = leave empty (natural gap = depth)
-                if (darkFactor >= 0.75) continue;
+                // Quantisation error = what we wanted minus what we got
+                const er = r - match.r;
+                const eg = g - match.g;
+                const eb = b - match.b;
 
-                let shadeTier;
-                if      (darkFactor < 0.25) shadeTier = 0;
-                else if (darkFactor < 0.50) shadeTier = 1;
-                else                        shadeTier = 2;
+                // Floyd-Steinberg error diffusion:
+                //         X    7/16
+                //   3/16  5/16  1/16
+                const spread = (nx, ny, fr) => {
+                    if (nx < 0 || nx >= outW || ny >= outH) return;
+                    const ni = ny * outW + nx;
+                    buf[ni*3+0] += er * fr;
+                    buf[ni*3+1] += eg * fr;
+                    buf[ni*3+2] += eb * fr;
+                };
+                spread(tx+1, ty,   7/16);
+                spread(tx-1, ty+1, 3/16);
+                spread(tx,   ty+1, 5/16);
+                spread(tx+1, ty+1, 1/16);
 
                 const wx = startX + tx, wy = startY + ty;
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
 
-                const block = getShadedBlock(r, g, b, shadeTier);
-                if (block) {
-                    fgData[wx][wy] = JSON.parse(JSON.stringify(block));
-                    placed++;
-                }
+                fgData[wx][wy] = JSON.parse(JSON.stringify(match.block));
+                placed++;
             }
         }
-        statusEl.innerText = `✅ Pixel art done! ${placed} blocks placed with 3-tier shading.`;
+        statusEl.innerText = `✅ Done! ${placed} blocks placed with dithered shading.`;
     });
 }
 
