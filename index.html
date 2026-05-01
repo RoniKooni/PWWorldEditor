@@ -57,7 +57,6 @@
             <button id="ref-overlay-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_eye.png"><span>Reference</span></button>
             <button id="custom-bg-btn" class="icon-text-btn"><img src="textures/ui/ButtonIcon_orb.png"><span>Custom BG</span></button>
             <button id="img2blocks-btn" class="icon-text-btn"><img src="textures/ui/PaintBrush.png"><span>Img→Blocks</span></button>
-            <button id="block-counter-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_inventory.png"><span>Counter</span></button>
             <input type="file" id="ref-overlay-input" class="hidden" accept="image/*">
             <input type="file" id="custom-bg-input" class="hidden" accept="image/*">
             <input type="file" id="img2blocks-input" class="hidden" accept="image/*">
@@ -147,35 +146,6 @@
             <button id="custom-bg-apply-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">Apply as Background</button>
             <button id="custom-bg-remove-btn" class="fancy-btn danger" style="width:100%">Remove Custom BG</button>
         </div>
-    </div>
-
-    <!-- Block Counter -->
-    <div id="block-counter-popup" class="hidden menu-popup wide-popup">
-        <div class="popup-header"><h3>🧱 Block Counter</h3><button class="close-btn-fancy">×</button></div>
-        <div style="font-size:13px;color:#aaa;margin-bottom:10px;">Counts every block placed in the world and how many you need to buy.</div>
-        <div style="display:flex;gap:8px;margin-bottom:10px;">
-            <button id="bc-count-btn" class="fancy-btn highlight" style="flex:1;">Count Blocks</button>
-            <button id="bc-copy-btn" class="fancy-btn" style="flex:1;">📋 Copy List</button>
-        </div>
-        <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
-            <label style="font-size:12px;color:#aaa;white-space:nowrap;">Stack size:</label>
-            <input type="number" id="bc-stack-size" value="200" min="1" max="9999" style="width:80px;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
-            <label style="font-size:12px;color:#aaa;white-space:nowrap;">Layer:</label>
-            <select id="bc-layer" style="background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;flex:1;">
-                <option value="both">Both layers</option>
-                <option value="fg">Foreground only</option>
-                <option value="bg">Background only</option>
-            </select>
-        </div>
-        <div id="bc-summary" style="display:none;margin-bottom:10px;padding:8px;background:#1a1a1a;border-radius:6px;border:1px solid #333;">
-            <div style="display:flex;gap:16px;flex-wrap:wrap;">
-                <div><span style="color:#aaa;font-size:11px;">TOTAL BLOCKS</span><br><span id="bc-total" style="color:#3abdc2;font-size:18px;font-weight:bold;">0</span></div>
-                <div><span style="color:#aaa;font-size:11px;">UNIQUE TYPES</span><br><span id="bc-unique" style="color:#f0a500;font-size:18px;font-weight:bold;">0</span></div>
-                <div><span style="color:#aaa;font-size:11px;">STACKS NEEDED</span><br><span id="bc-stacks" style="color:#c97aff;font-size:18px;font-weight:bold;">0</span></div>
-            </div>
-        </div>
-        <input type="text" id="bc-search" class="ui-search" placeholder="Search block name..." style="margin-bottom:8px;display:none;">
-        <div id="bc-list" style="max-height:320px;overflow-y:auto;"></div>
     </div>
 
     <!-- Image to Blocks Converter -->
