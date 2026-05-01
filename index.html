@@ -50,6 +50,7 @@
             <button id="screenshot-btn" class="icon-text-btn"><img src="textures/ui/PanoramaCamera.png"><span>Screenshot</span></button>
             <button id="save-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_download.png"><span>Save</span></button>
             <button id="import-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_import.png"><span>Import</span></button>
+            <button id="block-counter-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_inventory.png"><span>Block Count</span></button>
             <input type="file" id="file-input" class="hidden" accept=".json">
         </div>
 
@@ -187,6 +188,28 @@
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
             <div id="i2b-status" style="font-size:11px;color:#3abdc2;text-align:center;"></div>
         </div>
+    </div>
+
+    <!-- Block Counter Panel -->
+    <div id="block-counter-popup" class="hidden menu-popup wide-popup">
+        <div class="popup-header">
+            <h3>Block Counter</h3>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <input type="text" id="block-counter-search" class="ui-search" placeholder="Filter blocks..." style="width:200px;">
+                <button class="close-btn-fancy">×</button>
+            </div>
+        </div>
+        <div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;">
+            <span id="bc-total-fg" style="color:#3abdc2;font-weight:700;"></span>
+            <span id="bc-total-bg" style="color:#f0a040;font-weight:700;"></span>
+            <span id="bc-total-all" style="color:#fff;font-weight:700;"></span>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <button id="bc-filter-all" class="fancy-btn highlight" style="flex:1;margin-top:0;padding:6px;">All</button>
+            <button id="bc-filter-fg" class="fancy-btn" style="flex:1;margin-top:0;padding:6px;border-color:#3abdc2;color:#3abdc2;">FG Only</button>
+            <button id="bc-filter-bg" class="fancy-btn" style="flex:1;margin-top:0;padding:6px;border-color:#f0a040;color:#f0a040;">BG Only</button>
+        </div>
+        <div id="block-counter-list" style="max-height:420px;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:4px;"></div>
     </div>
 
     <div id="clear-popup" class="hidden menu-popup">
