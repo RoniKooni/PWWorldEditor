@@ -241,6 +241,117 @@ window.addEventListener('contextmenu', (e) => e.preventDefault());
 const bindings = { 'inv-toggle': 'inventory-popup', 'bg-ui-btn': 'bg-popup', 'clear-menu-btn': 'clear-popup', 'help-btn': 'help-popup', 'ref-overlay-btn': 'ref-overlay-popup', 'custom-bg-btn': 'custom-bg-popup', 'img2blocks-btn': 'img2blocks-popup' };
 Object.keys(bindings).forEach(id => { const el = document.getElementById(id); if(el) el.onclick = () => openMenu(bindings[id]); });
 
+// ── Block Counter ──
+let bcActiveFilter = 'all';
+
+function getBlockCounts() {
+    const fgCounts = {}, bgCounts = {};
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            if (fgData[x][y]) {
+                const key = fgData[x][y].name;
+                fgCounts[key] = (fgCounts[key] || { block: fgData[x][y], count: 0 });
+                fgCounts[key].count++;
+            }
+            if (bgData[x][y]) {
+                const key = bgData[x][y].name;
+                bgCounts[key] = (bgCounts[key] || { block: bgData[x][y], count: 0 });
+                bgCounts[key].count++;
+            }
+        }
+    }
+    return { fgCounts, bgCounts };
+}
+
+function renderBlockCounter(filter, searchTerm) {
+    const { fgCounts, bgCounts } = getBlockCounts();
+    const list = document.getElementById('block-counter-list');
+    list.innerHTML = '';
+
+    let totalFg = 0, totalBg = 0;
+    Object.values(fgCounts).forEach(e => totalFg += e.count);
+    Object.values(bgCounts).forEach(e => totalBg += e.count);
+
+    document.getElementById('bc-total-fg').innerText = `FG: ${totalFg} blocks`;
+    document.getElementById('bc-total-bg').innerText = `BG: ${totalBg} blocks`;
+    document.getElementById('bc-total-all').innerText = `Total: ${totalFg + totalBg} blocks`;
+
+    const combined = {};
+    if (filter !== 'bg') {
+        Object.entries(fgCounts).forEach(([k, v]) => {
+            combined[k] = combined[k] || { block: v.block, fg: 0, bg: 0 };
+            combined[k].fg = v.count;
+        });
+    }
+    if (filter !== 'fg') {
+        Object.entries(bgCounts).forEach(([k, v]) => {
+            combined[k] = combined[k] || { block: v.block, fg: 0, bg: 0 };
+            combined[k].bg = v.count;
+        });
+    }
+
+    const entries = Object.entries(combined)
+        .filter(([k]) => !searchTerm || k.toLowerCase().includes(searchTerm.toLowerCase()))
+        .sort((a, b) => (b[1].fg + b[1].bg) - (a[1].fg + a[1].bg));
+
+    if (entries.length === 0) {
+        list.innerHTML = '<div style="color:#555;font-size:13px;padding:20px;text-align:center;grid-column:1/-1;">No blocks placed yet.</div>';
+        return;
+    }
+
+    entries.forEach(([name, data]) => {
+        const total = data.fg + data.bg;
+        const card = document.createElement('div');
+        card.style.cssText = 'background:#1c1c1c;border:1px solid #333;border-radius:8px;padding:10px;display:flex;align-items:center;gap:10px;';
+        const texture = data.block.texture || '';
+        card.innerHTML = `
+            <img src="${texture}" style="width:32px;height:32px;image-rendering:pixelated;flex-shrink:0;">
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:11px;color:#eee;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${name}">${name}</div>
+                <div style="font-size:13px;color:#fff;font-weight:700;margin-top:2px;">× ${total}</div>
+                ${data.fg > 0 && data.bg > 0 ? `<div style="font-size:10px;color:#888;margin-top:1px;"><span style="color:#3abdc2;">FG:${data.fg}</span> <span style="color:#f0a040;">BG:${data.bg}</span></div>` : 
+                  data.fg > 0 ? `<div style="font-size:10px;color:#3abdc2;margin-top:1px;">Foreground</div>` :
+                  `<div style="font-size:10px;color:#f0a040;margin-top:1px;">Background</div>`}
+            </div>`;
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('block-counter-btn').onclick = () => {
+    openMenu('block-counter-popup');
+    bcActiveFilter = 'all';
+    renderBlockCounter('all', '');
+    document.getElementById('block-counter-search').value = '';
+    document.getElementById('bc-filter-all').classList.add('highlight');
+    document.getElementById('bc-filter-fg').classList.remove('highlight');
+    document.getElementById('bc-filter-bg').classList.remove('highlight');
+};
+
+document.getElementById('bc-filter-all').onclick = () => {
+    bcActiveFilter = 'all';
+    document.getElementById('bc-filter-all').classList.add('highlight');
+    document.getElementById('bc-filter-fg').classList.remove('highlight');
+    document.getElementById('bc-filter-bg').classList.remove('highlight');
+    renderBlockCounter('all', document.getElementById('block-counter-search').value);
+};
+document.getElementById('bc-filter-fg').onclick = () => {
+    bcActiveFilter = 'fg';
+    document.getElementById('bc-filter-all').classList.remove('highlight');
+    document.getElementById('bc-filter-fg').classList.add('highlight');
+    document.getElementById('bc-filter-bg').classList.remove('highlight');
+    renderBlockCounter('fg', document.getElementById('block-counter-search').value);
+};
+document.getElementById('bc-filter-bg').onclick = () => {
+    bcActiveFilter = 'bg';
+    document.getElementById('bc-filter-all').classList.remove('highlight');
+    document.getElementById('bc-filter-fg').classList.remove('highlight');
+    document.getElementById('bc-filter-bg').classList.add('highlight');
+    renderBlockCounter('bg', document.getElementById('block-counter-search').value);
+};
+document.getElementById('block-counter-search').oninput = (e) => {
+    renderBlockCounter(bcActiveFilter, e.target.value);
+};
+
 document.getElementById('bucket-btn').onclick = () => {
     if (activeTool === 'bucket') openMenu('bucket-popup');
     else updateToolState('bucket');
@@ -462,13 +573,15 @@ function render(time) {
     }
 
     if (showGrid) {
-        ctx.strokeStyle = "rgba(255,255,255,0.05)";
+        ctx.strokeStyle = "rgba(220, 40, 40, 0.55)";
+        ctx.lineWidth = 1.5;
         for (let i = 0; i <= GRID_X; i++) {
             ctx.beginPath(); ctx.moveTo(i * TILE, 0); ctx.lineTo(i * TILE, canvas.height); ctx.stroke();
         }
         for (let i = 0; i <= GRID_Y; i++) {
             ctx.beginPath(); ctx.moveTo(0, i * TILE); ctx.lineTo(canvas.width, i * TILE); ctx.stroke();
         }
+        ctx.lineWidth = 1;
     }
 
     requestAnimationFrame(render);
