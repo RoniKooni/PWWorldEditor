@@ -831,8 +831,6 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             const layer = layerChoice === 'bg' ? bgData : fgData;
             let placed = 0;
 
-            const celMode = document.getElementById('i2b-celshade').checked;
-
             // Build luminance map
             const lumMap = new Float32Array(outW * outH);
             for (let i = 0; i < outW * outH; i++) {
@@ -868,6 +866,9 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
             for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
 
+            // Shade multipliers: tier 0=bright, 1=mid, 2=dark, 3=very dark
+            const SHADE_MUL = [1.0, 0.72, 0.48, 0.28];
+
             function findClosest(r, g, b) {
                 let best = null, bestDist = Infinity;
                 for (const entry of palette) {
@@ -878,16 +879,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                 return best;
             }
 
-            // Darkest block in palette — used for outlines in cel mode
-            const outlineBlock = palette.reduce((a, b2) => a.lum < b2.lum ? a : b2).block;
-
             const colorCache = {};
-
-            // CEL SHADE MULTIPLIERS: hard 3 zones only
-            // highlight → base color untouched
-            // shadow    → color × 0.55 (one hard step)
-            // deep shad → color × 0.30 (very dark, under curves/neck/dress folds)
-            const CEL_MUL = [1.0, 0.55, 0.30];
 
             for (let ty = 0; ty < outH; ty++) {
                 for (let tx = 0; tx < outW; tx++) {
@@ -899,48 +891,26 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     const lum = lumMap[idx];
                     if (lum < 0) continue;
 
-                    const normLum = (lum - minLum) / lumRange; // 0=darkest, 1=brightest
+                    // Only shade mid/bright pixels. Dark pixels match color directly.
+                    // normLum: 0=darkest, 1=brightest in image
+                    const normLum = (lum - minLum) / lumRange;
                     const edge = edgeMap[idx];
 
                     let sr, sg, sb;
-
-                    if (celMode) {
-                        // ── CEL SHADE MODE ──
-                        // Hard outlines: strong edges → force darkest block
-                        if (edge > 0.45) {
-                            const worldX = startX + tx, worldY = startY + ty;
-                            if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y) {
-                                layer[worldX][worldY] = JSON.parse(JSON.stringify(outlineBlock));
-                                placed++;
-                            }
-                            continue;
-                        }
-
-                        // Posterize into 3 hard zones based on absolute luminance
-                        // (not relative — so black dress stays black, skin stays skin)
-                        let celTier;
-                        if      (normLum > 0.65) celTier = 0; // highlight — bright areas
-                        else if (normLum > 0.30) celTier = 1; // shadow — mid tones
-                        else                     celTier = 2; // deep shadow — dark areas
-
-                        const m = CEL_MUL[celTier];
-                        sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
-
+                    if (normLum < 0.35) {
+                        // Dark pixel — match color directly, no shading
+                        sr = r; sg = g; sb = b;
                     } else {
-                        // ── GRADIENT SHADE MODE (original) ──
-                        const SHADE_MUL = [1.0, 0.72, 0.48, 0.28];
-                        if (normLum < 0.25) {
-                            sr = r; sg = g; sb = b;
-                        } else {
-                            const shadeFactor = (1.0 - normLum) * 0.90 + edge * 0.10;
-                            let tier;
-                            if      (shadeFactor < 0.30) tier = 0;
-                            else if (shadeFactor < 0.55) tier = 1;
-                            else if (shadeFactor < 0.78) tier = 2;
-                            else                         tier = 3;
-                            const m = SHADE_MUL[tier];
-                            sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
-                        }
+                        // Mid/bright pixel — apply shading based on brightness + edges
+                        // Brighter pixels get lighter shade, edges get darker
+                        const shadeFactor = (1.0 - normLum) * 0.60 + edge * 0.40;
+                        let tier;
+                        if      (shadeFactor < 0.25) tier = 0;
+                        else if (shadeFactor < 0.50) tier = 1;
+                        else if (shadeFactor < 0.75) tier = 2;
+                        else                         tier = 3;
+                        const m = SHADE_MUL[tier];
+                        sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
                     }
 
                     const key = `${sr>>2},${sg>>2},${sb>>2}`;
@@ -954,7 +924,7 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
                     }
                 }
             }
-            statusEl.innerText = `✅ Done! Placed ${placed} blocks. Mode: ${celMode ? 'Cel-shade' : 'Gradient'}.`;
+            statusEl.innerText = `✅ Done! Placed ${placed} blocks with depth shading.`;
         }
 
         processBatch();
