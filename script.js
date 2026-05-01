@@ -892,7 +892,6 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
             }
         }
         statusEl.innerText = `✅ Pixel art done! ${placed} blocks placed with 3-tier shading.`;
-        drawBlocks();
     });
 }
 
@@ -939,7 +938,6 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
             }
         }
         statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
-        drawBlocks();
     });
 }
 
