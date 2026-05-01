@@ -831,100 +831,44 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
             const layer = layerChoice === 'bg' ? bgData : fgData;
             let placed = 0;
 
-            // Build luminance map
-            const lumMap = new Float32Array(outW * outH);
-            for (let i = 0; i < outW * outH; i++) {
-                const pi = i * 4;
-                if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
-                lumMap[i] = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
-            }
-
-            // Global lum range
-            let minLum = 255, maxLum = 0;
-            for (let i = 0; i < lumMap.length; i++) {
-                if (lumMap[i] < 0) continue;
-                if (lumMap[i] < minLum) minLum = lumMap[i];
-                if (lumMap[i] > maxLum) maxLum = lumMap[i];
-            }
-            const lumRange = Math.max(maxLum - minLum, 1);
-
-            // Sobel edge map
-            const edgeMap = new Float32Array(outW * outH);
-            for (let ty = 1; ty < outH-1; ty++) {
-                for (let tx = 1; tx < outW-1; tx++) {
-                    const idx = ty*outW+tx;
-                    if (lumMap[idx] < 0) continue;
-                    const tl=lumMap[(ty-1)*outW+(tx-1)], t=lumMap[(ty-1)*outW+tx], tr=lumMap[(ty-1)*outW+(tx+1)];
-                    const ml=lumMap[ty*outW+(tx-1)],                                mr=lumMap[ty*outW+(tx+1)];
-                    const bl=lumMap[(ty+1)*outW+(tx-1)], b2=lumMap[(ty+1)*outW+tx], br=lumMap[(ty+1)*outW+(tx+1)];
-                    const gx = -tl - 2*ml - bl + tr + 2*mr + br;
-                    const gy = -tl - 2*t  - tr + bl + 2*b2 + br;
-                    edgeMap[idx] = Math.sqrt(gx*gx + gy*gy);
-                }
-            }
-            let maxEdge = 1;
-            for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
-            for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
-
-            // Shade multipliers: tier 0=bright, 1=mid, 2=dark, 3=very dark
-            const SHADE_MUL = [1.0, 0.72, 0.48, 0.28];
-
-            function findClosest(r, g, b) {
-                let best = null, bestDist = Infinity;
-                for (const entry of palette) {
-                    const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
-                    const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                    if (dist < bestDist) { bestDist = dist; best = entry.block; }
-                }
-                return best;
-            }
-
+            // Pure perceptual color matching — no dithering.
+            // Each pixel maps cleanly to whichever palette block is the closest color.
+            // Dark pixels get dark blocks, bright pixels get bright blocks: clean shading.
+            // Finer quantize key (>>2 = steps of 4) gives smoother gradient transitions.
             const colorCache = {};
 
             for (let ty = 0; ty < outH; ty++) {
                 for (let tx = 0; tx < outW; tx++) {
                     const pi = (ty * outW + tx) * 4;
-                    const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
+                    const r = pixelData[pi];
+                    const g = pixelData[pi+1];
+                    const b = pixelData[pi+2];
+                    const a = pixelData[pi+3];
                     if (a < 64) continue;
 
-                    const idx = ty * outW + tx;
-                    const lum = lumMap[idx];
-                    if (lum < 0) continue;
-
-                    // Only shade mid/bright pixels. Dark pixels match color directly.
-                    // normLum: 0=darkest, 1=brightest in image
-                    const normLum = (lum - minLum) / lumRange;
-                    const edge = edgeMap[idx];
-
-                    let sr, sg, sb;
-                    if (normLum < 0.35) {
-                        // Dark pixel — match color directly, no shading
-                        sr = r; sg = g; sb = b;
-                    } else {
-                        // Mid/bright pixel — apply shading based on brightness + edges
-                        // Brighter pixels get lighter shade, edges get darker
-                        const shadeFactor = (1.0 - normLum) * 0.60 + edge * 0.40;
-                        let tier;
-                        if      (shadeFactor < 0.25) tier = 0;
-                        else if (shadeFactor < 0.50) tier = 1;
-                        else if (shadeFactor < 0.75) tier = 2;
-                        else                         tier = 3;
-                        const m = SHADE_MUL[tier];
-                        sr = Math.round(r * m); sg = Math.round(g * m); sb = Math.round(b * m);
+                    const key = `${r>>2},${g>>2},${b>>2}`;
+                    let best = colorCache[key];
+                    if (!best) {
+                        let bestDist = Infinity;
+                        for (const entry of palette) {
+                            const dr = r - entry.r;
+                            const dg = g - entry.g;
+                            const db = b - entry.b;
+                            const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                            if (dist < bestDist) { bestDist = dist; best = entry.block; }
+                        }
+                        colorCache[key] = best;
                     }
 
-                    const key = `${sr>>2},${sg>>2},${sb>>2}`;
-                    if (!colorCache[key]) colorCache[key] = findClosest(sr, sg, sb);
-                    const best = colorCache[key];
-
-                    const worldX = startX + tx, worldY = startY + ty;
+                    const worldX = startX + tx;
+                    const worldY = startY + ty;
                     if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
                         layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
                         placed++;
                     }
                 }
             }
-            statusEl.innerText = `✅ Done! Placed ${placed} blocks with depth shading.`;
+            statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
         }
 
         processBatch();
