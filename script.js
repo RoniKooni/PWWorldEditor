@@ -805,78 +805,93 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
     batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks...', (palette) => {
         if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
 
-        statusEl.innerText = `⚡ Placing dithered pixel blocks with ${palette.length} colors...`;
+        statusEl.innerText = `⚡ Placing shaded pixel blocks with ${palette.length} colors...`;
         saveHistory();
 
-        // ── Copy pixel data into float error-diffusion buffer ──
-        // We work on R, G, B channels separately with accumulated error.
-        // This is Floyd-Steinberg dithering — it spreads the color quantisation
-        // error to neighbouring pixels so the overall colour average is preserved,
-        // giving the mixed/painterly look seen in the reference image.
-        const buf = new Float32Array(outW * outH * 3);
+        // ── Global luminance range ──
+        const lumMap = new Float32Array(outW * outH);
         for (let i = 0; i < outW * outH; i++) {
             const pi = i * 4;
-            buf[i*3+0] = pixelData[pi+0];
-            buf[i*3+1] = pixelData[pi+1];
-            buf[i*3+2] = pixelData[pi+2];
+            if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
+            lumMap[i] = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
         }
+        let minLum = 255, maxLum = 0;
+        for (let i = 0; i < lumMap.length; i++) {
+            if (lumMap[i] < 0) continue;
+            if (lumMap[i] < minLum) minLum = lumMap[i];
+            if (lumMap[i] > maxLum) maxLum = lumMap[i];
+        }
+        const lumRange = Math.max(maxLum - minLum, 1);
 
-        const colorCache = {};
-        function quantize(r, g, b) {
-            // clamp
-            r = Math.max(0, Math.min(255, Math.round(r)));
-            g = Math.max(0, Math.min(255, Math.round(g)));
-            b = Math.max(0, Math.min(255, Math.round(b)));
-            const key = `${r>>1},${g>>1},${b>>1}`;
-            if (colorCache[key]) return colorCache[key];
-            const best = findClosestBlock(r, g, b, palette);
-            colorCache[key] = best;
-            return best;
+        // ── Sobel edge map ──
+        const edgeMap = new Float32Array(outW * outH);
+        for (let ty = 1; ty < outH-1; ty++) {
+            for (let tx = 1; tx < outW-1; tx++) {
+                const idx = ty*outW+tx;
+                if (lumMap[idx] < 0) continue;
+                const tl=lumMap[(ty-1)*outW+(tx-1)], t=lumMap[(ty-1)*outW+tx], tr2=lumMap[(ty-1)*outW+(tx+1)];
+                const ml=lumMap[ty*outW+(tx-1)], mr=lumMap[ty*outW+(tx+1)];
+                const bl=lumMap[(ty+1)*outW+(tx-1)], b2=lumMap[(ty+1)*outW+tx], br=lumMap[(ty+1)*outW+(tx+1)];
+                const gx = -tl - 2*ml - bl + tr2 + 2*mr + br;
+                const gy = -tl - 2*t  - tr2 + bl + 2*b2 + br;
+                edgeMap[idx] = Math.sqrt(gx*gx + gy*gy);
+            }
+        }
+        let maxEdge = 1;
+        for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
+        for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
+
+        // ── Shade tiers: search for closest block to darkened color ──
+        // Tier 0 (highlight): color × 1.0
+        // Tier 1 (midtone):   color × 0.72
+        // Tier 2 (shadow):    color × 0.48
+        // Tier 3 (deep):      skip FG entirely (leave empty)
+        const SHADE_MULT = [1.0, 0.72, 0.48];
+        const shadeCache = {};
+        function getShadedBlock(r, g, b, tier) {
+            const key = `${r>>2},${g>>2},${b>>2},${tier}`;
+            if (shadeCache[key] !== undefined) return shadeCache[key];
+            const m = SHADE_MULT[tier];
+            const best = findClosestBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), palette);
+            shadeCache[key] = best ? best.block : null;
+            return shadeCache[key];
         }
 
         let placed = 0;
         for (let ty = 0; ty < outH; ty++) {
             for (let tx = 0; tx < outW; tx++) {
                 const pi = (ty * outW + tx) * 4;
-                if (pixelData[pi+3] < 64) continue;
+                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
+                if (a < 64) continue;
 
                 const idx = ty * outW + tx;
-                const r = buf[idx*3+0];
-                const g = buf[idx*3+1];
-                const b = buf[idx*3+2];
+                const lum = lumMap[idx];
+                if (lum < 0) continue;
 
-                // Find closest palette block to current (error-adjusted) color
-                const match = quantize(r, g, b);
-                if (!match) continue;
+                // darkFactor: 0 = brightest pixel in image, 1 = darkest
+                const normLum = 1.0 - (lum - minLum) / lumRange;
+                const edgeStr = edgeMap[idx];
+                const darkFactor = normLum * 0.70 + edgeStr * 0.30;
 
-                // Quantisation error = what we wanted minus what we got
-                const er = r - match.r;
-                const eg = g - match.g;
-                const eb = b - match.b;
+                // Tier 3 = leave empty (natural gap = depth)
+                if (darkFactor >= 0.75) continue;
 
-                // Floyd-Steinberg error diffusion:
-                //         X    7/16
-                //   3/16  5/16  1/16
-                const spread = (nx, ny, fr) => {
-                    if (nx < 0 || nx >= outW || ny >= outH) return;
-                    const ni = ny * outW + nx;
-                    buf[ni*3+0] += er * fr;
-                    buf[ni*3+1] += eg * fr;
-                    buf[ni*3+2] += eb * fr;
-                };
-                spread(tx+1, ty,   7/16);
-                spread(tx-1, ty+1, 3/16);
-                spread(tx,   ty+1, 5/16);
-                spread(tx+1, ty+1, 1/16);
+                let shadeTier;
+                if      (darkFactor < 0.25) shadeTier = 0;
+                else if (darkFactor < 0.50) shadeTier = 1;
+                else                        shadeTier = 2;
 
                 const wx = startX + tx, wy = startY + ty;
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
 
-                fgData[wx][wy] = JSON.parse(JSON.stringify(match.block));
-                placed++;
+                const block = getShadedBlock(r, g, b, shadeTier);
+                if (block) {
+                    fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                    placed++;
+                }
             }
         }
-        statusEl.innerText = `✅ Done! ${placed} blocks placed with dithered shading.`;
+        statusEl.innerText = `✅ Pixel art done! ${placed} blocks placed with 3-tier shading.`;
     });
 }
 
@@ -970,127 +985,4 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
         }
     };
     tempImg.src = i2bImgData;
-};
-
-// ============================================================
-// FEATURE: Block Counter
-// ============================================================
-document.getElementById('block-counter-btn').onclick = () => openMenu('block-counter-popup');
-
-function runBlockCount() {
-    const layer = document.getElementById('bc-layer').value;
-    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
-
-    // Tally all blocks
-    const counts = {}; // name → { block, count }
-
-    const tally = (data) => {
-        for (let x = 0; x < GRID_X; x++) {
-            for (let y = 0; y < GRID_Y; y++) {
-                const b = data[x][y];
-                if (!b) continue;
-                const key = b.name;
-                if (!counts[key]) counts[key] = { block: b, count: 0 };
-                counts[key].count++;
-            }
-        }
-    };
-
-    if (layer === 'both' || layer === 'fg') tally(fgData);
-    if (layer === 'both' || layer === 'bg') tally(bgData);
-
-    const entries = Object.values(counts).sort((a, b) => b.count - a.count);
-    const total = entries.reduce((s, e) => s + e.count, 0);
-    const unique = entries.length;
-    const totalStacks = entries.reduce((s, e) => s + Math.ceil(e.count / stackSize), 0);
-
-    // Summary bar
-    document.getElementById('bc-total').innerText = total.toLocaleString();
-    document.getElementById('bc-unique').innerText = unique;
-    document.getElementById('bc-stacks').innerText = totalStacks.toLocaleString();
-    document.getElementById('bc-summary').style.display = 'block';
-    document.getElementById('bc-search').style.display = 'block';
-
-    // Render list
-    renderBlockCountList(entries, stackSize);
-
-    // Store for search
-    document.getElementById('bc-search').dataset.entries = JSON.stringify(
-        entries.map(e => ({ name: e.block.name, texture: e.block.texture, count: e.count }))
-    );
-    document.getElementById('bc-search').value = '';
-}
-
-function renderBlockCountList(entries, stackSize) {
-    const list = document.getElementById('bc-list');
-    if (entries.length === 0) {
-        list.innerHTML = '<div style="color:#555;text-align:center;padding:20px;">No blocks found.</div>';
-        return;
-    }
-
-    list.innerHTML = entries.map((e, i) => {
-        const stacks = Math.floor(e.count / stackSize);
-        const remainder = e.count % stackSize;
-        const stackStr = stacks > 0
-            ? `<span style="color:#c97aff;">${stacks} stack${stacks !== 1 ? 's' : ''}</span>${remainder > 0 ? ` + <span style="color:#aaa;">${remainder}</span>` : ''}`
-            : `<span style="color:#aaa;">${remainder}</span>`;
-
-        return `<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:4px;background:${i%2===0?'#1a1a1a':'#151515'};margin-bottom:2px;">
-            <img src="${e.block.texture}" style="width:28px;height:28px;image-rendering:pixelated;border-radius:3px;flex-shrink:0;">
-            <div style="flex:1;min-width:0;">
-                <div style="font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.block.name}</div>
-                <div style="font-size:11px;margin-top:1px;">${stackStr}</div>
-            </div>
-            <div style="text-align:right;flex-shrink:0;">
-                <div style="font-size:13px;color:#3abdc2;font-weight:bold;">${e.count.toLocaleString()}</div>
-                <div style="font-size:10px;color:#555;">blocks</div>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-document.getElementById('bc-count-btn').onclick = runBlockCount;
-
-document.getElementById('bc-stack-size').oninput = () => {
-    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
-    const raw = document.getElementById('bc-search').dataset.entries;
-    if (!raw) return;
-    const entries = JSON.parse(raw).map(e => ({ block: { name: e.name, texture: e.texture }, count: e.count }));
-    const totalStacks = entries.reduce((s, e) => s + Math.ceil(e.count / stackSize), 0);
-    document.getElementById('bc-stacks').innerText = totalStacks.toLocaleString();
-    const term = document.getElementById('bc-search').value.toLowerCase();
-    const filtered = term ? entries.filter(e => e.block.name.toLowerCase().includes(term)) : entries;
-    renderBlockCountList(filtered, stackSize);
-};
-
-document.getElementById('bc-search').oninput = (ev) => {
-    const term = ev.target.value.toLowerCase();
-    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
-    const raw = ev.target.dataset.entries;
-    if (!raw) return;
-    const entries = JSON.parse(raw).map(e => ({ block: { name: e.name, texture: e.texture }, count: e.count }));
-    const filtered = term ? entries.filter(e => e.block.name.toLowerCase().includes(term)) : entries;
-    renderBlockCountList(filtered, stackSize);
-};
-
-document.getElementById('bc-copy-btn').onclick = () => {
-    const raw = document.getElementById('bc-search').dataset.entries;
-    if (!raw) { alert('Click "Count Blocks" first!'); return; }
-    const stackSize = Math.max(1, parseInt(document.getElementById('bc-stack-size').value) || 200);
-    const entries = JSON.parse(raw);
-    const total = entries.reduce((s, e) => s + e.count, 0);
-    const lines = [
-        `Block Counter — Total: ${total.toLocaleString()} blocks (${entries.length} types)`,
-        `Stack size: ${stackSize}`,
-        ``,
-        ...entries.map(e => {
-            const stacks = Math.floor(e.count / stackSize);
-            const rem = e.count % stackSize;
-            const stackStr = stacks > 0 ? `${stacks}s${rem > 0 ? ` +${rem}` : ''}` : `${rem}`;
-            return `${e.name}: ${e.count} (${stackStr})`;
-        })
-    ];
-    navigator.clipboard.writeText(lines.join('\n'))
-        .then(() => { document.getElementById('bc-copy-btn').innerText = '✅ Copied!'; setTimeout(() => document.getElementById('bc-copy-btn').innerText = '📋 Copy List', 2000); })
-        .catch(() => alert('Copy failed — try manually.'));
 };
