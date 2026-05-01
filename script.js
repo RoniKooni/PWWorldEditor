@@ -661,7 +661,7 @@ document.getElementById('custom-bg-remove-btn').onclick = () => {
 
 
 // ============================================================
-// FEATURE: Image to Blocks Converter
+// FEATURE: Image to Blocks Converter (Enhanced with Depth & Shading)
 // ============================================================
 let i2bImgData = null;
 let i2bImgEl = null;
@@ -686,14 +686,266 @@ document.getElementById('img2blocks-input').onchange = (e) => {
 // Variety slider label updater
 document.getElementById('i2b-variety').oninput = (e) => {
     const labels = [
-        '🟦 Pixel blocks only (cleanest)',
-        '🟧 + All foreground blocks',
-        '🔶 + Background wall tiles',
-        '🌈 Everything inc. props & water'
+        '🟦 Pixel blocks only — clean pixel art mode',
+        '🟧 HD Depth Art — FG+BG layers + 3-tier shading',
+        '🔶 HD Depth Art + wall tiles (richer palette)',
+        '🌈 HD Depth Art — everything inc. props & water'
     ];
     document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
 };
 
+// ─────────────────────────────────────────────
+// SHARED: Sample average color from a block texture
+// ─────────────────────────────────────────────
+function sampleBlockColor(block) {
+    return new Promise((resolve) => {
+        const img = imgCache[block.texture] || (() => {
+            const i = new Image(); i.src = block.texture; return i;
+        })();
+        const doSample = () => {
+            try {
+                const c = document.createElement('canvas');
+                c.width = 4; c.height = 4;
+                const cx = c.getContext('2d');
+                cx.drawImage(img, 0, 0, 4, 4);
+                const d = cx.getImageData(0, 0, 4, 4).data;
+                let r=0, g=0, b=0, count=0;
+                for (let i=0; i<d.length; i+=4) {
+                    if (d[i+3] > 64) { r+=d[i]; g+=d[i+1]; b+=d[i+2]; count++; }
+                }
+                if (count === 0) { resolve(null); return; }
+                const avgR = Math.round(r/count);
+                const avgG = Math.round(g/count);
+                const avgB = Math.round(b/count);
+                const lum = 0.299*avgR + 0.587*avgG + 0.114*avgB;
+                resolve({ r: avgR, g: avgG, b: avgB, lum, block });
+            } catch(e) { resolve(null); }
+        };
+        if (img.complete && img.naturalWidth > 0) doSample();
+        else { img.onload = doSample; img.onerror = () => resolve(null); }
+    });
+}
+
+// ─────────────────────────────────────────────
+// SHARED: Closest color match (perceptual, weighted)
+// ─────────────────────────────────────────────
+function findClosestBlock(r, g, b, palette) {
+    let best = null, bestDist = Infinity;
+    for (const entry of palette) {
+        const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+        const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+        if (dist < bestDist) { bestDist = dist; best = entry; }
+    }
+    return best;
+}
+
+// ─────────────────────────────────────────────
+// SHARED: Sample image into pixel canvas + collect pixel data
+// ─────────────────────────────────────────────
+function sampleImageToCanvas(tempImg, outW, outH, doFlip) {
+    const offscreen = document.createElement('canvas');
+    offscreen.width = outW; offscreen.height = outH;
+    const offCtx = offscreen.getContext('2d');
+    if (doFlip) {
+        offCtx.save();
+        offCtx.translate(outW, 0);
+        offCtx.rotate(Math.PI / 2);
+        offCtx.drawImage(tempImg, 0, 0, outH, outW);
+        offCtx.restore();
+    } else {
+        offCtx.drawImage(tempImg, 0, 0, outW, outH);
+    }
+    return offCtx.getImageData(0, 0, outW, outH).data;
+}
+
+// ─────────────────────────────────────────────
+// SHARED: Batch block color sampler
+// ─────────────────────────────────────────────
+function batchSampleBlocks(candidateBlocks, statusEl, label, callback) {
+    const BATCH = 50;
+    const results = [];
+    let idx = 0;
+    function processBatch() {
+        const slice = candidateBlocks.slice(idx, idx + BATCH);
+        idx += BATCH;
+        Promise.all(slice.map(sampleBlockColor)).then(batch => {
+            batch.forEach(r => { if (r) results.push(r); });
+            if (idx < candidateBlocks.length) {
+                statusEl.innerText = `⏳ ${label} ${Math.min(idx, candidateBlocks.length)}/${candidateBlocks.length}`;
+                setTimeout(processBatch, 0);
+            } else {
+                callback(results);
+            }
+        });
+    }
+    processBatch();
+}
+
+// ─────────────────────────────────────────────
+// MODE 1: PIXEL BLOCKS — shaded pixel art
+// Uses Pixel Blocks on FG only.
+// Shading: dark pixels in the image get darker pixel block variants.
+// How: for each pixel, compute darkness 0-1 from absolute luminance,
+// then search for the closest block to (color * darkenMultiplier).
+// 4 tiers: highlight / midtone / shadow / deep shadow (skipped = empty).
+// ─────────────────────────────────────────────
+function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
+    const candidateBlocks = blockLibrary.filter(b => {
+        if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
+        const frameMatch = b.fileName.match(/_(\d+)\.png$/);
+        if (frameMatch && frameMatch[1] !== '0') return false;
+        return b.fileName.startsWith('Pixel Block');
+    });
+
+    if (candidateBlocks.length === 0) {
+        statusEl.innerText = 'Error: No Pixel Blocks found!';
+        return;
+    }
+
+    batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks...', (palette) => {
+        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
+
+        statusEl.innerText = `⚡ Placing shaded pixel blocks with ${palette.length} colors...`;
+        saveHistory();
+
+        // ── Global luminance range ──
+        const lumMap = new Float32Array(outW * outH);
+        for (let i = 0; i < outW * outH; i++) {
+            const pi = i * 4;
+            if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
+            lumMap[i] = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
+        }
+        let minLum = 255, maxLum = 0;
+        for (let i = 0; i < lumMap.length; i++) {
+            if (lumMap[i] < 0) continue;
+            if (lumMap[i] < minLum) minLum = lumMap[i];
+            if (lumMap[i] > maxLum) maxLum = lumMap[i];
+        }
+        const lumRange = Math.max(maxLum - minLum, 1);
+
+        // ── Sobel edge map ──
+        const edgeMap = new Float32Array(outW * outH);
+        for (let ty = 1; ty < outH-1; ty++) {
+            for (let tx = 1; tx < outW-1; tx++) {
+                const idx = ty*outW+tx;
+                if (lumMap[idx] < 0) continue;
+                const tl=lumMap[(ty-1)*outW+(tx-1)], t=lumMap[(ty-1)*outW+tx], tr2=lumMap[(ty-1)*outW+(tx+1)];
+                const ml=lumMap[ty*outW+(tx-1)], mr=lumMap[ty*outW+(tx+1)];
+                const bl=lumMap[(ty+1)*outW+(tx-1)], b2=lumMap[(ty+1)*outW+tx], br=lumMap[(ty+1)*outW+(tx+1)];
+                const gx = -tl - 2*ml - bl + tr2 + 2*mr + br;
+                const gy = -tl - 2*t  - tr2 + bl + 2*b2 + br;
+                edgeMap[idx] = Math.sqrt(gx*gx + gy*gy);
+            }
+        }
+        let maxEdge = 1;
+        for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
+        for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
+
+        // ── Shade tiers: search for closest block to darkened color ──
+        // Tier 0 (highlight): color × 1.0
+        // Tier 1 (midtone):   color × 0.72
+        // Tier 2 (shadow):    color × 0.48
+        // Tier 3 (deep):      skip FG entirely (leave empty)
+        const SHADE_MULT = [1.0, 0.72, 0.48];
+        const shadeCache = {};
+        function getShadedBlock(r, g, b, tier) {
+            const key = `${r>>2},${g>>2},${b>>2},${tier}`;
+            if (shadeCache[key] !== undefined) return shadeCache[key];
+            const m = SHADE_MULT[tier];
+            const best = findClosestBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), palette);
+            shadeCache[key] = best ? best.block : null;
+            return shadeCache[key];
+        }
+
+        let placed = 0;
+        for (let ty = 0; ty < outH; ty++) {
+            for (let tx = 0; tx < outW; tx++) {
+                const pi = (ty * outW + tx) * 4;
+                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
+                if (a < 64) continue;
+
+                const idx = ty * outW + tx;
+                const lum = lumMap[idx];
+                if (lum < 0) continue;
+
+                // darkFactor: 0 = brightest pixel in image, 1 = darkest
+                const normLum = 1.0 - (lum - minLum) / lumRange;
+                const edgeStr = edgeMap[idx];
+                const darkFactor = normLum * 0.70 + edgeStr * 0.30;
+
+                // Tier 3 = leave empty (natural gap = depth)
+                if (darkFactor >= 0.75) continue;
+
+                let shadeTier;
+                if      (darkFactor < 0.25) shadeTier = 0;
+                else if (darkFactor < 0.50) shadeTier = 1;
+                else                        shadeTier = 2;
+
+                const wx = startX + tx, wy = startY + ty;
+                if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
+
+                const block = getShadedBlock(r, g, b, shadeTier);
+                if (block) {
+                    fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                    placed++;
+                }
+            }
+        }
+        statusEl.innerText = `✅ Pixel art done! ${placed} blocks placed with 3-tier shading.`;
+        drawBlocks();
+    });
+}
+
+// ─────────────────────────────────────────────
+// MODE 2–4: HD ALL BLOCKS — pure color match, FG only
+// No shading. Uses all/fg/wall block types for richer palette.
+// ─────────────────────────────────────────────
+function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, statusEl) {
+    const candidateBlocks = blockLibrary.filter(b => {
+        if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
+        const frameMatch = b.fileName.match(/_(\d+)\.png$/);
+        if (frameMatch && frameMatch[1] !== '0') return false;
+        return blockSetFilter(b);
+    });
+
+    batchSampleBlocks(candidateBlocks, statusEl, 'Sampling blocks...', (palette) => {
+        if (palette.length === 0) { statusEl.innerText = 'Error: No blocks sampled.'; return; }
+
+        statusEl.innerText = `⚡ Placing blocks with ${palette.length} colors...`;
+        saveHistory();
+
+        const colorCache = {};
+        let placed = 0;
+
+        for (let ty = 0; ty < outH; ty++) {
+            for (let tx = 0; tx < outW; tx++) {
+                const pi = (ty * outW + tx) * 4;
+                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
+                if (a < 64) continue;
+
+                const key = `${r>>2},${g>>2},${b>>2}`;
+                if (!colorCache[key]) {
+                    const best = findClosestBlock(r, g, b, palette);
+                    colorCache[key] = best ? best.block : null;
+                }
+
+                const wx = startX + tx, wy = startY + ty;
+                if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y || !colorCache[key]) continue;
+
+                const block = colorCache[key];
+                if (block.type === 'wall') bgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                else fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                placed++;
+            }
+        }
+        statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
+        drawBlocks();
+    });
+}
+
+// ─────────────────────────────────────────────
+// MAIN CONVERT BUTTON
+// ─────────────────────────────────────────────
 document.getElementById('img2blocks-convert-btn').onclick = () => {
     if (!i2bImgData) { alert('Please upload an image first.'); return; }
 
@@ -701,177 +953,38 @@ document.getElementById('img2blocks-convert-btn').onclick = () => {
     const startY = parseInt(document.getElementById('i2b-y').value);
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
-    const layerChoice = document.getElementById('i2b-layer').value;
     const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
     const doFlip = document.getElementById('i2b-flip').checked;
 
-    // Effective output dimensions after optional 90° rotation
     const outW = doFlip ? tileH : tileW;
     const outH = doFlip ? tileW : tileH;
 
     const statusEl = document.getElementById('i2b-status');
-    statusEl.innerText = '⏳ Sampling all block colors... (this may take a moment)';
+    statusEl.innerText = '⏳ Loading image...';
 
-    // Sample image pixels
     const tempImg = new Image();
     tempImg.onload = () => {
-        const offscreen = document.createElement('canvas');
-        offscreen.width = outW;
-        offscreen.height = outH;
-        const offCtx = offscreen.getContext('2d');
+        const pixelData = sampleImageToCanvas(tempImg, outW, outH, doFlip);
 
-        if (doFlip) {
-            // Rotate 90° clockwise: translate to (outW, 0), rotate, then draw
-            offCtx.save();
-            offCtx.translate(outW, 0);
-            offCtx.rotate(Math.PI / 2);
-            offCtx.drawImage(tempImg, 0, 0, outH, outW);
-            offCtx.restore();
+        if (variety === 1) {
+            // ── MODE 1: Clean pixel art (pixel blocks only, FG layer) ──
+            statusEl.innerText = '⏳ Pixel art mode: sampling pixel blocks...';
+            runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl);
         } else {
-            offCtx.drawImage(tempImg, 0, 0, outW, outH);
+            // ── MODE 2–4: HD Depth Art (dual-layer + 3-tier shading) ──
+            statusEl.innerText = '⏳ HD mode: sampling block palette...';
+
+            const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
+            const isBlockFolder = (b) => b.folder === 'block';
+            const isWallFolder  = (b) => b.folder === 'background';
+
+            let blockSetFilter;
+            if (variety === 2) blockSetFilter = (b) => isPixelBlock(b) || isBlockFolder(b);
+            else if (variety === 3) blockSetFilter = (b) => isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
+            else blockSetFilter = () => true;
+
+            runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, statusEl);
         }
-        const pixelData = offCtx.getImageData(0, 0, outW, outH).data;
-
-        // VARIETY LEVELS:
-        // 1 = Pixel Blocks only (flat solid color, cleanest look)
-        // 2 = + basic solid color blocks (colored blocks, bricks, jewels)
-        // 3 = + textured blocks (soil, stone, wood, metal, etc.)
-        // 4 = everything (props, water, all types)
-        // Filter helpers
-        const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-        const isBlockFolder = (b) => b.folder === 'block';
-        const isPropFolder  = (b) => b.folder === 'prop';
-        const isWallFolder  = (b) => b.folder === 'background';
-        const isWaterFolder = (b) => b.folder === 'water';
-
-        // Build candidate list based on variety
-        // Level 1: only Pixel Blocks (43 flat solid colors — best color accuracy)
-        // Level 2: Pixel Blocks + all foreground blocks (soil, stone, wood etc.)
-        // Level 3: + background wall tiles
-        // Level 4: everything including props and water
-        const candidateBlocks = blockLibrary.filter(b => {
-            if (b.fileName.includes('_Alt')) return false;
-            if (b.fileName.includes('_Glow')) return false;
-            const frameMatch = b.fileName.match(/_(\d+)\.png$/);
-            if (frameMatch && frameMatch[1] !== '0') return false;
-
-            if (variety === 1) return isPixelBlock(b);
-            if (variety === 2) return isPixelBlock(b) || isBlockFolder(b);
-            if (variety === 3) return isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
-            return true; // variety 4: everything
-        });
-
-        if (candidateBlocks.length === 0) {
-            statusEl.innerText = 'Error: No blocks found for the selected layer!';
-            return;
-        }
-
-        statusEl.innerText = `⏳ Variety level ${variety}: sampling ${candidateBlocks.length} blocks...`;
-
-        // Sample average color of each block by drawing to a small canvas
-        // Also capture luminance for shading system
-        function sampleBlockColor(block) {
-            return new Promise((resolve) => {
-                const img = imgCache[block.texture] || (() => {
-                    const i = new Image(); i.src = block.texture; return i;
-                })();
-                const doSample = () => {
-                    try {
-                        const c = document.createElement('canvas');
-                        c.width = 4; c.height = 4;
-                        const cx = c.getContext('2d');
-                        cx.drawImage(img, 0, 0, 4, 4);
-                        const d = cx.getImageData(0, 0, 4, 4).data;
-                        // Average all 16 pixels, skip transparent ones
-                        let r=0, g=0, b=0, count=0;
-                        for (let i=0; i<d.length; i+=4) {
-                            if (d[i+3] > 64) { r+=d[i]; g+=d[i+1]; b+=d[i+2]; count++; }
-                        }
-                        if (count === 0) { resolve(null); return; }
-                        const avgR = Math.round(r/count);
-                        const avgG = Math.round(g/count);
-                        const avgB = Math.round(b/count);
-                        const lum = 0.299*avgR + 0.587*avgG + 0.114*avgB;
-                        resolve({ r: avgR, g: avgG, b: avgB, lum, block });
-                    } catch(e) { resolve(null); }
-                };
-                if (img.complete && img.naturalWidth > 0) doSample();
-                else { img.onload = doSample; img.onerror = () => resolve(null); }
-            });
-        }
-
-        // Sample in batches to avoid freezing the browser
-        const BATCH = 50;
-        const results = [];
-        let idx = 0;
-
-        function processBatch() {
-            const slice = candidateBlocks.slice(idx, idx + BATCH);
-            idx += BATCH;
-            Promise.all(slice.map(sampleBlockColor)).then(batch => {
-                batch.forEach(r => { if (r) results.push(r); });
-                if (idx < candidateBlocks.length) {
-                    statusEl.innerText = `⏳ Sampling blocks... ${Math.min(idx, candidateBlocks.length)}/${candidateBlocks.length}`;
-                    setTimeout(processBatch, 0);
-                } else {
-                    doConvert(results);
-                }
-            });
-        }
-
-        function doConvert(palette) {
-            if (palette.length === 0) {
-                statusEl.innerText = 'Error: Could not sample any block colors.';
-                return;
-            }
-
-            statusEl.innerText = `⚡ Converting with ${palette.length} block colors...`;
-
-            saveHistory();
-            const layer = layerChoice === 'bg' ? bgData : fgData;
-            let placed = 0;
-
-            // Pure perceptual color matching — no dithering.
-            // Each pixel maps cleanly to whichever palette block is the closest color.
-            // Dark pixels get dark blocks, bright pixels get bright blocks: clean shading.
-            // Finer quantize key (>>2 = steps of 4) gives smoother gradient transitions.
-            const colorCache = {};
-
-            for (let ty = 0; ty < outH; ty++) {
-                for (let tx = 0; tx < outW; tx++) {
-                    const pi = (ty * outW + tx) * 4;
-                    const r = pixelData[pi];
-                    const g = pixelData[pi+1];
-                    const b = pixelData[pi+2];
-                    const a = pixelData[pi+3];
-                    if (a < 64) continue;
-
-                    const key = `${r>>2},${g>>2},${b>>2}`;
-                    let best = colorCache[key];
-                    if (!best) {
-                        let bestDist = Infinity;
-                        for (const entry of palette) {
-                            const dr = r - entry.r;
-                            const dg = g - entry.g;
-                            const db = b - entry.b;
-                            const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                            if (dist < bestDist) { bestDist = dist; best = entry.block; }
-                        }
-                        colorCache[key] = best;
-                    }
-
-                    const worldX = startX + tx;
-                    const worldY = startY + ty;
-                    if (worldX >= 0 && worldX < GRID_X && worldY >= 0 && worldY < GRID_Y && best) {
-                        layer[worldX][worldY] = JSON.parse(JSON.stringify(best));
-                        placed++;
-                    }
-                }
-            }
-            statusEl.innerText = `✅ Done! Placed ${placed} blocks using ${palette.length} colors.`;
-        }
-
-        processBatch();
     };
     tempImg.src = i2bImgData;
 };
