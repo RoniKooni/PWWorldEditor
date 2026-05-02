@@ -633,7 +633,7 @@ function drawShape(x1, y1, x2, y2) {
     }
 }
 
-const SHADOW_OFFSET = 14;  // px offset to bottom-right
+const SHADOW_OFFSET = 8;  // px offset to bottom-right
 const SHADOW_ALPHA  = 0.35; // translucency of shadow
 
 function render(time) {
