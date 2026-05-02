@@ -542,33 +542,92 @@ function drawShape(x1, y1, x2, y2) {
     }
 }
 
+const SHADOW_OFFSET = 4;   // px offset to bottom-right
+const SHADOW_ALPHA  = 0.35; // translucency of shadow
+
 function render(time) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const glowAlpha = (Math.sin(time * 0.002) + 1) / 2;
 
+    // ── Pass 1: draw background blocks ──
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
-            [bgData[x][y], fgData[x][y]].forEach(block => {
-                if (!block) return;
+            const block = bgData[x][y];
+            if (!block) continue;
+            const baseTex = getBlockTexture(x, y, block);
+            if (!baseTex) continue;
+            ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
+        }
+    }
 
-                const baseTex = getBlockTexture(x, y, block);
-                if (!baseTex) return;
+    // ── Pass 2: draw fg block shadows — only on top of bg cells ──
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,' + SHADOW_ALPHA + ')';
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            if (!fgData[x][y]) continue; // no fg block here, no shadow
 
-                ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
+            // Check each of the 4 shadow-region cells for a bg block
+            // Shadow covers the bottom-right SHADOW_OFFSET strip of this tile
+            // and bleeds into the tile to the right and below.
+            // We just clip drawing to cells that actually have a bg block.
+            const px = x * TILE + SHADOW_OFFSET;
+            const py = y * TILE + SHADOW_OFFSET;
+            const pw = TILE;
+            const ph = TILE;
 
-                const glowName = block.fileName.replace('.png', '_Glow.png');
-                const hasGlow = ASSET_LIST.some(a => a.file === glowName && a.folder === block.folder);
+            // Gather bg cells that the shadow rectangle overlaps
+            const x0 = x, x1 = x + 1; // tile columns overlapped
+            const y0 = y, y1 = y + 1; // tile rows overlapped
 
-                if (hasGlow) {
-                    const glowTex = getImg(`${BASE_PATH}${block.folder}/${glowName}`);
-                    if (glowTex && glowTex.complete) {
-                        ctx.save();
-                        ctx.globalAlpha = glowAlpha;
-                        ctx.drawImage(glowTex, x * TILE, y * TILE, TILE, TILE);
-                        ctx.restore();
+            for (let bx = x0; bx <= x1; bx++) {
+                for (let by = y0; by <= y1; by++) {
+                    if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
+                    if (!bgData[bx][by]) continue; // no bg here → skip
+
+                    // Clip shadow rect to this bg tile's bounds
+                    const tileLeft   = bx * TILE;
+                    const tileTop    = by * TILE;
+                    const tileRight  = tileLeft + TILE;
+                    const tileBottom = tileTop  + TILE;
+
+                    const clipX = Math.max(px, tileLeft);
+                    const clipY = Math.max(py, tileTop);
+                    const clipW = Math.min(px + pw, tileRight)  - clipX;
+                    const clipH = Math.min(py + ph, tileBottom) - clipY;
+
+                    if (clipW > 0 && clipH > 0) {
+                        ctx.fillRect(clipX, clipY, clipW, clipH);
                     }
                 }
-            });
+            }
+        }
+    }
+    ctx.restore();
+
+    // ── Pass 3: draw fg blocks (and their glows) on top ──
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const block = fgData[x][y];
+            if (!block) continue;
+
+            const baseTex = getBlockTexture(x, y, block);
+            if (!baseTex) continue;
+
+            ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
+
+            const glowName = block.fileName.replace('.png', '_Glow.png');
+            const hasGlow = ASSET_LIST.some(a => a.file === glowName && a.folder === block.folder);
+
+            if (hasGlow) {
+                const glowTex = getImg(`${BASE_PATH}${block.folder}/${glowName}`);
+                if (glowTex && glowTex.complete) {
+                    ctx.save();
+                    ctx.globalAlpha = glowAlpha;
+                    ctx.drawImage(glowTex, x * TILE, y * TILE, TILE, TILE);
+                    ctx.restore();
+                }
+            }
         }
     }
 
