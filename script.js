@@ -1051,14 +1051,161 @@ function batchSampleBlocks(candidateBlocks, statusEl, label, callback) {
 }
 
 // ─────────────────────────────────────────────
-// MODE 1: PIXEL BLOCKS — shaded pixel art
+// SHARED: Detect if image is monochrome / ink art (B&W manga, line art, etc.)
+// Returns true when the image has very low color saturation on average,
+// meaning it is essentially grayscale and should be treated as ink art.
+// ─────────────────────────────────────────────
+function detectMonochrome(pixelData, outW, outH) {
+    let totalSat = 0, count = 0;
+    for (let i = 0; i < outW * outH; i++) {
+        const pi = i * 4;
+        if (pixelData[pi+3] < 64) continue;
+        const r = pixelData[pi] / 255, g = pixelData[pi+1] / 255, b = pixelData[pi+2] / 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        totalSat += (max - min);
+        count++;
+    }
+    if (count === 0) return false;
+    // Average saturation below 0.08 = effectively grayscale
+    return (totalSat / count) < 0.08;
+}
+
+// ─────────────────────────────────────────────
+// MODE 1a: INK ART MODE — for B&W manga, line art, halftone art.
+// Dark pixels = ink = place block. Light pixels = paper = leave empty.
+// Uses a 4-tier ink density system so halftones and gradients render faithfully:
+//   Tier 0 (solid ink, darkFactor ≥ 0.72): darkest block (Black or near-black)
+//   Tier 1 (dark tone, ≥ 0.45):            dark-grey block
+//   Tier 2 (halftone, ≥ 0.22):             mid-grey block
+//   Tier 3 (near-white, < 0.22):           leave empty (paper)
+// The Sobel edge map is used to boost ink lines — edges always get at least Tier 1
+// regardless of raw luminance, so fine hair lines and contour strokes are never lost.
+// ─────────────────────────────────────────────
+function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
+    const candidateBlocks = blockLibrary.filter(b => {
+        if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
+        const frameMatch = b.fileName.match(/_(\d+)\.png$/);
+        if (frameMatch && frameMatch[1] !== '0') return false;
+        return b.fileName.startsWith('Pixel Block');
+    });
+
+    if (candidateBlocks.length === 0) {
+        statusEl.innerText = 'Error: No Pixel Blocks found!';
+        return;
+    }
+
+    batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks (ink art)...', (palette) => {
+        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
+
+        statusEl.innerText = `⚡ Placing ink art blocks with ${palette.length} colors...`;
+        saveHistory();
+
+        // ── Build luminance map ──
+        const lumMap = new Float32Array(outW * outH);
+        for (let i = 0; i < outW * outH; i++) {
+            const pi = i * 4;
+            if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
+            lumMap[i] = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
+        }
+        let minLum = 255, maxLum = 0;
+        for (let i = 0; i < lumMap.length; i++) {
+            if (lumMap[i] < 0) continue;
+            if (lumMap[i] < minLum) minLum = lumMap[i];
+            if (lumMap[i] > maxLum) maxLum = lumMap[i];
+        }
+        const lumRange = Math.max(maxLum - minLum, 1);
+
+        // ── Sobel edge map — critical for preserving ink strokes ──
+        const edgeMap = new Float32Array(outW * outH);
+        for (let ty = 1; ty < outH-1; ty++) {
+            for (let tx = 1; tx < outW-1; tx++) {
+                const idx = ty*outW+tx;
+                if (lumMap[idx] < 0) continue;
+                const tl=lumMap[(ty-1)*outW+(tx-1)], t=lumMap[(ty-1)*outW+tx], tr2=lumMap[(ty-1)*outW+(tx+1)];
+                const ml=lumMap[ty*outW+(tx-1)], mr=lumMap[ty*outW+(tx+1)];
+                const bl=lumMap[(ty+1)*outW+(tx-1)], b2=lumMap[(ty+1)*outW+tx], br=lumMap[(ty+1)*outW+(tx+1)];
+                const gx = -tl - 2*ml - bl + tr2 + 2*mr + br;
+                const gy = -tl - 2*t  - tr2 + bl + 2*b2 + br;
+                edgeMap[idx] = Math.sqrt(gx*gx + gy*gy);
+            }
+        }
+        let maxEdge = 1;
+        for (let i = 0; i < edgeMap.length; i++) if (edgeMap[i] > maxEdge) maxEdge = edgeMap[i];
+        for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
+
+        // ── Build ink density tiers targeting B&W blocks ──
+        // Target luminances for each tier: solid black → dark grey → mid grey
+        const INK_TARGETS = [
+            { r: 20,  g: 20,  b: 20  },  // Tier 0: solid ink
+            { r: 70,  g: 70,  b: 70  },  // Tier 1: dark tone
+            { r: 150, g: 150, b: 150 },  // Tier 2: halftone/grey
+        ];
+        const tierCache = [{}, {}, {}];
+        function getInkBlock(tier) {
+            const t = INK_TARGETS[tier];
+            const key = tier;
+            if (tierCache[tier][key] !== undefined) return tierCache[tier][key];
+            const best = findClosestBlock(t.r, t.g, t.b, palette);
+            tierCache[tier][key] = best ? best.block : null;
+            return tierCache[tier][key];
+        }
+        // Pre-compute the three tier blocks once
+        const tierBlocks = [getInkBlock(0), getInkBlock(1), getInkBlock(2)];
+
+        let placed = 0;
+        for (let ty = 0; ty < outH; ty++) {
+            for (let tx = 0; tx < outW; tx++) {
+                const pi = (ty * outW + tx) * 4;
+                const a = pixelData[pi+3];
+                if (a < 64) continue;
+
+                const idx = ty * outW + tx;
+                const lum = lumMap[idx];
+                if (lum < 0) continue;
+
+                // inkDensity: 0 = pure white (paper), 1 = pure black (solid ink)
+                const inkDensity = 1.0 - (lum - minLum) / lumRange;
+                const edgeStr = edgeMap[idx];
+
+                // Edges always get elevated by at least 0.25 so ink strokes are never lost
+                const effectiveDensity = Math.min(1.0, inkDensity + edgeStr * 0.25);
+
+                // Skip near-white (paper) pixels — this is the correct direction for ink art
+                if (effectiveDensity < 0.22) continue;
+
+                let tier;
+                if      (effectiveDensity >= 0.72) tier = 0;  // solid ink → darkest block
+                else if (effectiveDensity >= 0.45) tier = 1;  // dark tone
+                else                               tier = 2;  // halftone
+
+                const wx = startX + tx, wy = startY + ty;
+                if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
+
+                const block = tierBlocks[tier];
+                if (block) {
+                    fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                    placed++;
+                }
+            }
+        }
+        statusEl.innerText = `✅ Ink art done! ${placed} blocks placed with 4-tier ink density.`;
+    });
+}
+
+// ─────────────────────────────────────────────
+// MODE 1: PIXEL BLOCKS — shaded pixel art (color) or ink art (B&W auto-detect)
 // Uses Pixel Blocks on FG only.
-// Shading: dark pixels in the image get darker pixel block variants.
-// How: for each pixel, compute darkness 0-1 from absolute luminance,
-// then search for the closest block to (color * darkenMultiplier).
-// 4 tiers: highlight / midtone / shadow / deep shadow (skipped = empty).
+// Auto-detects monochrome/ink art and switches to runInkArtMode.
+// For color images: shading via luminance+edge darkFactor, 3 tiers.
 // ─────────────────────────────────────────────
 function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
+    // ── Auto-detect B&W / ink art and use the correct mode ──
+    if (detectMonochrome(pixelData, outW, outH)) {
+        statusEl.innerText = '🖋️ Ink art detected — switching to ink art mode...';
+        runInkArtMode(pixelData, outW, outH, startX, startY, statusEl);
+        return;
+    }
+
     const candidateBlocks = blockLibrary.filter(b => {
         if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
         const frameMatch = b.fileName.match(/_(\d+)\.png$/);
