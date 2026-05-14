@@ -32,6 +32,7 @@ let scale = 0.8, posX = 0, posY = 0;
 let isPanning = false, isDrawing = false, showGrid = false;
 let shapeStart = null;
 const imgCache = {};
+const silhouetteCache = {}; // key: texture src → black-silhouette canvas (for non-block shadows)
 
 function autoLoadAssets() {
     if (typeof ASSET_LIST === 'undefined') {
@@ -652,43 +653,100 @@ function render(time) {
     }
 
     // ── Pass 2: draw fg block shadows — only on top of bg cells ──
+    // • Solid square shadow  → for 'block' type (opaque square tiles)
+    // • Image-shaped shadow  → for everything else (props, water, etc.)
+    //   Uses the block's own texture drawn in black + SHADOW_ALPHA transparency.
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,' + SHADOW_ALPHA + ')';
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
-            if (!fgData[x][y]) continue; // no fg block here, no shadow
+            const fgBlock = fgData[x][y];
+            if (!fgBlock) continue; // no fg block here, no shadow
 
-            // Check each of the 4 shadow-region cells for a bg block
-            // Shadow covers the bottom-right SHADOW_OFFSET strip of this tile
-            // and bleeds into the tile to the right and below.
-            // We just clip drawing to cells that actually have a bg block.
             const px = x * TILE + SHADOW_OFFSET;
             const py = y * TILE + SHADOW_OFFSET;
-            const pw = TILE;
-            const ph = TILE;
 
             // Gather bg cells that the shadow rectangle overlaps
-            const x0 = x, x1 = x + 1; // tile columns overlapped
-            const y0 = y, y1 = y + 1; // tile rows overlapped
+            const x0 = x, x1 = x + 1;
+            const y0 = y, y1 = y + 1;
 
-            for (let bx = x0; bx <= x1; bx++) {
-                for (let by = y0; by <= y1; by++) {
-                    if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
-                    if (!bgData[bx][by]) continue; // no bg here → skip
+            // ── Square shadow (block type) ──
+            if (fgBlock.type === 'block') {
+                ctx.fillStyle = 'rgba(0,0,0,' + SHADOW_ALPHA + ')';
+                for (let bx = x0; bx <= x1; bx++) {
+                    for (let by = y0; by <= y1; by++) {
+                        if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
+                        if (!bgData[bx][by]) continue;
 
-                    // Clip shadow rect to this bg tile's bounds
-                    const tileLeft   = bx * TILE;
-                    const tileTop    = by * TILE;
-                    const tileRight  = tileLeft + TILE;
-                    const tileBottom = tileTop  + TILE;
+                        const tileLeft   = bx * TILE;
+                        const tileTop    = by * TILE;
+                        const tileRight  = tileLeft + TILE;
+                        const tileBottom = tileTop  + TILE;
 
-                    const clipX = Math.max(px, tileLeft);
-                    const clipY = Math.max(py, tileTop);
-                    const clipW = Math.min(px + pw, tileRight)  - clipX;
-                    const clipH = Math.min(py + ph, tileBottom) - clipY;
+                        const clipX = Math.max(px, tileLeft);
+                        const clipY = Math.max(py, tileTop);
+                        const clipW = Math.min(px + TILE, tileRight)  - clipX;
+                        const clipH = Math.min(py + TILE, tileBottom) - clipY;
 
-                    if (clipW > 0 && clipH > 0) {
-                        ctx.fillRect(clipX, clipY, clipW, clipH);
+                        if (clipW > 0 && clipH > 0) {
+                            ctx.fillRect(clipX, clipY, clipW, clipH);
+                        }
+                    }
+                }
+            } else {
+                // ── Image-shaped shadow (prop, water, etc.) ──
+                const tex = getBlockTexture(x, y, fgBlock);
+                if (!tex || !tex.complete || tex.naturalWidth === 0) continue;
+
+                // Check that at least one bg cell exists under the shadow
+                let hasBg = false;
+                for (let bx = x0; bx <= x1 && !hasBg; bx++) {
+                    for (let by = y0; by <= y1 && !hasBg; by++) {
+                        if (bx >= 0 && bx < GRID_X && by >= 0 && by < GRID_Y && bgData[bx][by]) hasBg = true;
+                    }
+                }
+                if (!hasBg) continue;
+
+                // Build a black silhouette of the texture using an offscreen canvas (cached)
+                const cacheKey = tex.src;
+                let oc = silhouetteCache[cacheKey];
+                if (!oc) {
+                    oc = document.createElement('canvas');
+                    oc.width  = TILE;
+                    oc.height = TILE;
+                    const oc2 = oc.getContext('2d');
+                    oc2.drawImage(tex, 0, 0, TILE, TILE);
+                    oc2.globalCompositeOperation = 'source-in';
+                    oc2.fillStyle = 'black';
+                    oc2.fillRect(0, 0, TILE, TILE);
+                    silhouetteCache[cacheKey] = oc;
+                }
+
+                // Draw the silhouette at the shadow offset, clipped to bg tiles
+                for (let bx = x0; bx <= x1; bx++) {
+                    for (let by = y0; by <= y1; by++) {
+                        if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
+                        if (!bgData[bx][by]) continue;
+
+                        const tileLeft   = bx * TILE;
+                        const tileTop    = by * TILE;
+                        const tileRight  = tileLeft + TILE;
+                        const tileBottom = tileTop  + TILE;
+
+                        const clipX = Math.max(px, tileLeft);
+                        const clipY = Math.max(py, tileTop);
+                        const clipW = Math.min(px + TILE, tileRight)  - clipX;
+                        const clipH = Math.min(py + TILE, tileBottom) - clipY;
+
+                        if (clipW > 0 && clipH > 0) {
+                            ctx.save();
+                            ctx.globalAlpha = SHADOW_ALPHA;
+                            // Clip to just the overlapping region so shadow doesn't bleed
+                            ctx.beginPath();
+                            ctx.rect(clipX, clipY, clipW, clipH);
+                            ctx.clip();
+                            ctx.drawImage(oc, px, py, TILE, TILE);
+                            ctx.restore();
+                        }
                     }
                 }
             }
