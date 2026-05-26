@@ -20,7 +20,6 @@ const viewport = document.getElementById('viewport');
 
 let fgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let bgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
-let waterData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let history = [], redoStack = [];
 let activeAtmosphere = null;
 
@@ -114,23 +113,23 @@ function getBlockTexture(x, y, block) {
 
 function saveHistory() {
     if (history.length > 50) history.shift();
-    history.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), water: JSON.parse(JSON.stringify(waterData)), atm: activeAtmosphere });
+    history.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), atm: activeAtmosphere });
     redoStack = []; // any new action clears redo
 }
 
 function undo() {
     if (history.length > 0) {
-        redoStack.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), water: JSON.parse(JSON.stringify(waterData)), atm: activeAtmosphere });
+        redoStack.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), atm: activeAtmosphere });
         const state = history.pop();
-        fgData = state.fg; bgData = state.bg; waterData = state.water || Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null)); setBackground(state.atm);
+        fgData = state.fg; bgData = state.bg; setBackground(state.atm);
     }
 }
 
 function redo() {
     if (redoStack.length > 0) {
-        history.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), water: JSON.parse(JSON.stringify(waterData)), atm: activeAtmosphere });
+        history.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), atm: activeAtmosphere });
         const state = redoStack.pop();
-        fgData = state.fg; bgData = state.bg; waterData = state.water || Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null)); setBackground(state.atm);
+        fgData = state.fg; bgData = state.bg; setBackground(state.atm);
     }
 }
 
@@ -138,6 +137,40 @@ function getImg(src) {
     if (!src) return null;
     if (!imgCache[src]) { imgCache[src] = new Image(); imgCache[src].src = src; }
     return imgCache[src];
+}
+
+function cloneBlock(block) {
+    return JSON.parse(JSON.stringify(block));
+}
+
+function isWaterBlock(block) {
+    return !!block && (block.type === 'water' || block.folder === 'water');
+}
+
+function usesBackgroundLayer(block) {
+    return !!block && (block.type === 'wall' || isWaterBlock(block));
+}
+
+function placeBlockAt(x, y, block) {
+    if (!block || x < 0 || x >= GRID_X || y < 0 || y >= GRID_Y) return;
+
+    // Water behaves like a background layer so foreground blocks/platforms can sit above it.
+    if (usesBackgroundLayer(block)) {
+        bgData[x][y] = cloneBlock(block);
+
+        // Clean up older saves/worlds where water may already exist in the foreground.
+        if (isWaterBlock(block) && isWaterBlock(fgData[x][y])) {
+            fgData[x][y] = null;
+        }
+        return;
+    }
+
+    // If this cell has old foreground water, move it behind the new foreground block.
+    if (isWaterBlock(fgData[x][y])) {
+        bgData[x][y] = cloneBlock(fgData[x][y]);
+    }
+
+    fgData[x][y] = cloneBlock(block);
 }
 
 function setBackground(bgFile) {
@@ -332,11 +365,6 @@ function getBlockCounts() {
                 fgCounts[key] = (fgCounts[key] || { block: fgData[x][y], count: 0 });
                 fgCounts[key].count++;
             }
-            if (waterData[x][y]) {
-                const key = waterData[x][y].name;
-                fgCounts[key] = (fgCounts[key] || { block: waterData[x][y], count: 0 });
-                fgCounts[key].count++;
-            }
             if (bgData[x][y]) {
                 const key = bgData[x][y].name;
                 bgCounts[key] = (bgCounts[key] || { block: bgData[x][y], count: 0 });
@@ -462,7 +490,6 @@ document.getElementById('confirm-replace').onclick = () => {
     for(let x=0; x<GRID_X; x++) {
         for(let y=0; y<GRID_Y; y++) {
             if(fgData[x][y] && fgData[x][y].name === targetBlockForReplace.name) fgData[x][y] = JSON.parse(JSON.stringify(newBlock));
-            if(waterData[x][y] && waterData[x][y].name === targetBlockForReplace.name) waterData[x][y] = JSON.parse(JSON.stringify(newBlock));
             if(bgData[x][y] && bgData[x][y].name === targetBlockForReplace.name) bgData[x][y] = JSON.parse(JSON.stringify(newBlock));
         }
     }
@@ -482,7 +509,6 @@ document.getElementById('delete-all-trigger').onclick = () => {
         }
         fgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
         bgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
-        waterData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
         // Restore floor rows
         for (let x = 0; x < GRID_X; x++) {
             for (const row of [57, 58, 59]) {
@@ -498,7 +524,7 @@ document.getElementById('overlay').onclick = closeAll;
 document.getElementById('grid-toggle').onclick = () => showGrid = !showGrid;
 
 document.getElementById('save-btn').onclick = () => {
-    const data = JSON.stringify({ fg: fgData, bg: bgData, water: waterData, atm: activeAtmosphere });
+    const data = JSON.stringify({ fg: fgData, bg: bgData, atm: activeAtmosphere });
     const blob = new Blob([data], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'world.json'; a.click();
 };
@@ -506,7 +532,7 @@ document.getElementById('save-btn').onclick = () => {
 document.getElementById('import-btn').onclick = () => document.getElementById('file-input').click();
 document.getElementById('file-input').onchange = (e) => {
     const reader = new FileReader();
-    reader.onload = () => { const d = JSON.parse(reader.result); fgData = d.fg; bgData = d.bg; waterData = d.water || Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null)); setBackground(d.atm); };
+    reader.onload = () => { const d = JSON.parse(reader.result); fgData = d.fg; bgData = d.bg; setBackground(d.atm); };
     reader.readAsText(e.target.files[0]);
 };
 
@@ -521,7 +547,7 @@ viewport.onmousedown = (e) => {
     }
 
     if (activeTool === 'pick') {
-        const picked = fgData[x][y] || waterData[x][y] || bgData[x][y];
+        const picked = fgData[x][y] || bgData[x][y];
         if (picked) {
             let targetSlot = hotbar.findIndex((slot, idx) => idx > 0 && slot === null);
             if (targetSlot === -1) targetSlot = activeSlot === 0 ? 1 : activeSlot;
@@ -600,26 +626,24 @@ function handlePlace(e) {
     if (e.buttons === 1) {
         const b = hotbar[activeSlot];
         if (!b || activeSlot === 0) return;
-        if (b.type === 'wall') bgData[x][y] = JSON.parse(JSON.stringify(b));
-        else if (b.type === 'water') waterData[x][y] = JSON.parse(JSON.stringify(b));
-        else fgData[x][y] = JSON.parse(JSON.stringify(b));
+        placeBlockAt(x, y, b);
     }
     else if (e.buttons === 2) {
         fgData[x][y] = null;
         bgData[x][y] = null;
-        waterData[x][y] = null;
     }
 }
 
 function floodFill(x, y, block) {
-    const layer = (block && block.type === 'wall') ? bgData : (block && block.type === 'water') ? waterData : fgData;
+    const layer = (block && usesBackgroundLayer(block)) ? bgData : fgData;
     const target = layer[x][y]?.name || null;
     if(block && target === block.name) return;
     const stack = [[x, y]];
     while(stack.length) {
         const [cx, cy] = stack.pop();
         if(cx<0 || cx>=GRID_X || cy<0 || cy>=GRID_Y || (layer[cx][cy]?.name || null) !== target) continue;
-        layer[cx][cy] = block ? JSON.parse(JSON.stringify(block)) : null;
+        if (block) placeBlockAt(cx, cy, block);
+        else layer[cx][cy] = null;
         stack.push([cx+1, cy], [cx-1, cy], [cx, cy+1], [cx, cy-1]);
     }
 }
@@ -627,7 +651,7 @@ function floodFill(x, y, block) {
 function drawShape(x1, y1, x2, y2) {
     const type = document.getElementById('shape-type').value;
     const fill = document.getElementById('shape-fill').checked;
-    const layer = shapeBlock.type === 'wall' ? bgData : shapeBlock.type === 'water' ? waterData : fgData;
+    const layer = usesBackgroundLayer(shapeBlock) ? bgData : fgData;
     const minX = Math.min(x1, x2), maxX = Math.max(x1, x2), minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
     for(let x = minX; x <= maxX; x++) {
         for(let y = minY; y <= maxY; y++) {
@@ -639,7 +663,7 @@ function drawShape(x1, y1, x2, y2) {
                 const d = Math.pow((x - cx) / (rx || 1), 2) + Math.pow((y - cy) / (ry || 1), 2);
                 inside = fill ? d <= 1 : (d <= 1 && d >= 0.7);
             }
-            if(inside) layer[x][y] = JSON.parse(JSON.stringify(shapeBlock));
+            if(inside) placeBlockAt(x, y, shapeBlock);
         }
     }
 }
@@ -655,17 +679,6 @@ function render(time) {
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = bgData[x][y];
-            if (!block) continue;
-            const baseTex = getBlockTexture(x, y, block);
-            if (!baseTex) continue;
-            ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
-        }
-    }
-
-    // ── Pass 1b: draw water blocks (above bg, below fg) ──
-    for (let x = 0; x < GRID_X; x++) {
-        for (let y = 0; y < GRID_Y; y++) {
-            const block = waterData[x][y];
             if (!block) continue;
             const baseTex = getBlockTexture(x, y, block);
             if (!baseTex) continue;
@@ -870,10 +883,6 @@ document.getElementById('screenshot-btn').onclick = () => {
                 }
                 if (fgData[x][y]) {
                     const tex = getBlockTexture(x, y, fgData[x][y]);
-                    if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
-                }
-                if (waterData[x][y]) {
-                    const tex = getBlockTexture(x, y, waterData[x][y]);
                     if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
                 }
             }
@@ -1435,9 +1444,7 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y || !colorCache[key]) continue;
 
                 const block = colorCache[key];
-                if (block.type === 'wall') bgData[wx][wy] = JSON.parse(JSON.stringify(block));
-                else if (block.type === 'water') waterData[wx][wy] = JSON.parse(JSON.stringify(block));
-                else fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                placeBlockAt(wx, wy, block);
                 placed++;
             }
         }
