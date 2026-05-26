@@ -795,6 +795,10 @@ function render(time) {
     requestAnimationFrame(render);
 }
 
+function drawCanvas() {
+    requestAnimationFrame(render);
+}
+
 const pickBtn = document.getElementById('pick-btn');
 if (pickBtn) {
     pickBtn.onclick = () => updateToolState('pick');
