@@ -58,6 +58,7 @@
             <button id="ref-overlay-btn" class="icon-text-btn"><img src="textures/ui/buttonIcon_eye.png"><span>Reference</span></button>
             <button id="custom-bg-btn" class="icon-text-btn"><img src="textures/ui/ButtonIcon_orb.png"><span>Custom BG</span></button>
             <button id="img2blocks-btn" class="icon-text-btn"><img src="textures/ui/PaintBrush.png"><span>Img→Blocks</span></button>
+            <button id="p2w-btn" class="icon-text-btn" style="background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid #7c3aed;color:#a78bfa;">✨ <span>AI World</span></button>
             <input type="file" id="ref-overlay-input" class="hidden" accept="image/*">
             <input type="file" id="custom-bg-input" class="hidden" accept="image/*">
             <input type="file" id="img2blocks-input" class="hidden" accept="image/*">
@@ -194,6 +195,45 @@
             <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">⚡ Convert to Blocks</button>
             <div id="i2b-status" style="font-size:11px;color:#3abdc2;text-align:center;"></div>
+        </div>
+    </div>
+
+    <!-- Prompt to World Panel -->
+    <div id="p2w-popup" class="hidden menu-popup" style="width:380px;">
+        <div class="popup-header"><h3>✨ AI Prompt → World</h3><button class="close-btn-fancy">×</button></div>
+        <div style="padding:0 2px 4px;">
+            <label style="font-size:12px;color:#a78bfa;display:block;margin-bottom:4px;">OpenAI API Key</label>
+            <input id="p2w-apikey" type="password" placeholder="sk-..." style="width:100%;box-sizing:border-box;background:#0d0d1a;border:1px solid #7c3aed;border-radius:6px;color:#e2e8f0;padding:7px 10px;font-size:13px;outline:none;margin-bottom:10px;">
+
+            <label style="font-size:12px;color:#a78bfa;display:block;margin-bottom:4px;">Describe your world</label>
+            <textarea id="p2w-prompt" rows="4" placeholder="e.g. A castle on a hill with lava pits below, pine trees on the sides, and a sky background..." style="width:100%;box-sizing:border-box;background:#0d0d1a;border:1px solid #555;border-radius:6px;color:#e2e8f0;padding:8px 10px;font-size:13px;resize:vertical;outline:none;margin-bottom:10px;"></textarea>
+
+            <div style="display:flex;gap:8px;margin-bottom:10px;">
+                <div style="flex:1;">
+                    <label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Start X</label>
+                    <input id="p2w-x" type="number" value="0" min="0" max="79" style="width:100%;box-sizing:border-box;background:#111;border:1px solid #555;border-radius:5px;color:#fff;padding:5px 8px;font-size:13px;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Start Y</label>
+                    <input id="p2w-y" type="number" value="0" min="0" max="59" style="width:100%;box-sizing:border-box;background:#111;border:1px solid #555;border-radius:5px;color:#fff;padding:5px 8px;font-size:13px;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Width</label>
+                    <input id="p2w-w" type="number" value="40" min="5" max="80" style="width:100%;box-sizing:border-box;background:#111;border:1px solid #555;border-radius:5px;color:#fff;padding:5px 8px;font-size:13px;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Height</label>
+                    <input id="p2w-h" type="number" value="30" min="5" max="60" style="width:100%;box-sizing:border-box;background:#111;border:1px solid #555;border-radius:5px;color:#fff;padding:5px 8px;font-size:13px;">
+                </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                <input type="checkbox" id="p2w-replace" checked style="accent-color:#7c3aed;">
+                <label for="p2w-replace" style="font-size:12px;color:#ccc;">Replace existing blocks</label>
+            </div>
+
+            <button id="p2w-generate-btn" class="fancy-btn highlight" style="width:100%;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;margin-bottom:8px;">✨ Generate World</button>
+            <div id="p2w-status" style="font-size:12px;color:#aaa;text-align:center;min-height:18px;"></div>
         </div>
     </div>
 
