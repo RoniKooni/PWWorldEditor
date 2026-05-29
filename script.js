@@ -715,7 +715,16 @@ function render(time) {
         }
     }
 
-    // ── Pass 1b: water stored in bgData (pushed here when a non-water fg block shares the cell) ──
+    // ── Pass 1b: draw non-platform props BEFORE water so they appear behind water ──
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const block = fgData[x][y];
+            if (!block || isWaterBlock(block) || isPlatformBlock(block) || block.type !== 'prop') continue;
+            drawFgBlock(x, y, block);
+        }
+    }
+
+    // ── Pass 1c: water stored in bgData (pushed here when a non-water fg block shares the cell) ──
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = bgData[x][y];
@@ -726,7 +735,7 @@ function render(time) {
         }
     }
 
-    // ── Pass 1c: water blocks in fgData (no other fg block at this cell) ──
+    // ── Pass 1d: water blocks in fgData (no other fg block at this cell) ──
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = fgData[x][y];
@@ -737,15 +746,18 @@ function render(time) {
         }
     }
 
-    // ── Pass 2: draw fg block shadows — only on top of bg cells ──
+    // ── Pass 2: draw fg block shadows — only on top of non-water bg cells ──
     // • Solid square shadow  → for 'block' type (opaque square tiles)
-    // • Image-shaped shadow  → for everything else (props, water, etc.)
-    //   Uses the block's own texture drawn in black + SHADOW_ALPHA transparency.
+    // • Image-shaped shadow  → for 'block' type non-square variants
+    // • Props are drawn BEHIND water so they do NOT cast shadows.
+    //   Platforms cast shadows as normal since they render in front of water.
     ctx.save();
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const fgBlock = fgData[x][y];
             if (!fgBlock) continue; // no fg block here, no shadow
+            // Props are behind water — skip their shadows entirely
+            if (fgBlock.type === 'prop') continue;
 
             const px = x * TILE + SHADOW_OFFSET;
             const py = y * TILE + SHADOW_OFFSET;
@@ -761,6 +773,7 @@ function render(time) {
                     for (let by = y0; by <= y1; by++) {
                         if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
                         if (!bgData[bx][by]) continue;
+                        if (isWaterBlock(bgData[bx][by])) continue; // no shadow on water
 
                         const tileLeft   = bx * TILE;
                         const tileTop    = by * TILE;
@@ -782,11 +795,11 @@ function render(time) {
                 const tex = getBlockTexture(x, y, fgBlock);
                 if (!tex || !tex.complete || tex.naturalWidth === 0) continue;
 
-                // Check that at least one bg cell exists under the shadow
+                // Check that at least one non-water bg cell exists under the shadow
                 let hasBg = false;
                 for (let bx = x0; bx <= x1 && !hasBg; bx++) {
                     for (let by = y0; by <= y1 && !hasBg; by++) {
-                        if (bx >= 0 && bx < GRID_X && by >= 0 && by < GRID_Y && bgData[bx][by]) hasBg = true;
+                        if (bx >= 0 && bx < GRID_X && by >= 0 && by < GRID_Y && bgData[bx][by] && !isWaterBlock(bgData[bx][by])) hasBg = true;
                     }
                 }
                 if (!hasBg) continue;
@@ -806,11 +819,12 @@ function render(time) {
                     silhouetteCache[cacheKey] = oc;
                 }
 
-                // Draw the silhouette at the shadow offset, clipped to bg tiles
+                // Draw the silhouette at the shadow offset, clipped to non-water bg tiles
                 for (let bx = x0; bx <= x1; bx++) {
                     for (let by = y0; by <= y1; by++) {
                         if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
                         if (!bgData[bx][by]) continue;
+                        if (isWaterBlock(bgData[bx][by])) continue; // no shadow on water
 
                         const tileLeft   = bx * TILE;
                         const tileTop    = by * TILE;
@@ -857,16 +871,13 @@ function render(time) {
         }
     }
 
-    // ── Pass 3a: draw non-platform, non-water fg blocks (props behind water are already
-    //             handled by water being drawn in pass 1c; solid blocks and non-platform
-    //             props sit on top of water naturally because water is in fgData only when
-    //             the cell has no other fg block — see placeBlockAt). ──
-    //   Draw order within fg: non-platform props first, then solid blocks, then platforms.
-    //   This gives the visual stack:  bg walls → water → props → blocks → platforms
+    // ── Pass 3a: draw solid (non-prop, non-platform, non-water) fg blocks ──
+    //   Props were already drawn in Pass 1b (behind water).
+    //   Draw order:  bg walls → props → water → solid blocks → platforms
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = fgData[x][y];
-            if (!block || isWaterBlock(block) || isPlatformBlock(block)) continue;
+            if (!block || isWaterBlock(block) || isPlatformBlock(block) || block.type === 'prop') continue;
             drawFgBlock(x, y, block);
         }
     }
