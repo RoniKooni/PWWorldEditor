@@ -1767,18 +1767,30 @@ document.getElementById('i2w-replicate-btn').onclick = () => {
 // ─────────────────────────────────────────────
 // GENERATE MODE: Build a functional world from any image
 // Analyses image structure (sky/ground/underground layers, dominant colors,
-// brightness bands) and maps regions to appropriate block types with depth
+// brightness bands) and maps regions to appropriate block types with depth.
+// Runs row-by-row with async yield to keep the UI responsive.
 // ─────────────────────────────────────────────
 
-document.getElementById('i2w-gen-btn').onclick = () => {
+// Place a fg or bg block entry from a palette match result
+function placeBlock(palette, r, g, b, wx, wy, layer) {
+    const match = findClosestBlock(r, g, b, palette);
+    if (!match) return 0;
+    const blk = match.block;
+    const entry = { name: blk.name || blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.fileName || blk.file };
+    if (layer === 'fg') fgData[wx][wy] = entry;
+    else bgData[wx][wy] = entry;
+    return 1;
+}
+
+document.getElementById('i2w-gen-btn').onclick = async () => {
     if (!i2wGenImgData) { alert('Upload an image first.'); return; }
 
-    const startX   = parseInt(document.getElementById('i2w-gen-x').value) || 0;
-    const startY   = parseInt(document.getElementById('i2w-gen-y').value) || 0;
-    const tileW    = parseInt(document.getElementById('i2w-gen-w').value) || 40;
-    const tileH    = parseInt(document.getElementById('i2w-gen-h').value) || 30;
-    const depth    = parseInt(document.getElementById('i2w-gen-depth').value) || 2;
-    const replace  = document.getElementById('i2w-gen-replace').checked;
+    const startX  = parseInt(document.getElementById('i2w-gen-x').value) || 0;
+    const startY  = parseInt(document.getElementById('i2w-gen-y').value) || 0;
+    const tileW   = parseInt(document.getElementById('i2w-gen-w').value) || 40;
+    const tileH   = parseInt(document.getElementById('i2w-gen-h').value) || 30;
+    const depth   = parseInt(document.getElementById('i2w-gen-depth').value) || 2;
+    const replace = document.getElementById('i2w-gen-replace').checked;
     const statusEl = document.getElementById('i2w-gen-status');
     const btn      = document.getElementById('i2w-gen-btn');
 
@@ -1786,217 +1798,219 @@ document.getElementById('i2w-gen-btn').onclick = () => {
     statusEl.style.color = '#fbbf24';
     statusEl.innerText = 'Building block palettes...';
 
-    // Build separate palettes by block type
+    // Helper: yield to the browser so UI can repaint
+    const yieldFrame = () => new Promise(r => setTimeout(r, 0));
+
+    // ── Build palettes ──
     const blockTypes = ['block', 'wall', 'prop', 'water'];
-    const palettePromises = blockTypes.map(type => {
-        const blocks = ASSET_LIST.filter(b => (b.type || 'block') === type);
+    const paletteResults = await Promise.all(blockTypes.map(type => {
+        const blocks = blockLibrary.filter(b => b.type === type || (!b.type && type === 'block'));
         return Promise.all(blocks.map(b => sampleBlockColor(b))).then(res => res.filter(Boolean));
+    }));
+    const [solidPalette, wallPalette, propPalette, waterPalette] = paletteResults;
+
+    statusEl.innerText = 'Parsing image structure...';
+    await yieldFrame();
+
+    // ── Load image into canvas ──
+    const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = i2wGenImgData;
     });
 
-    Promise.all(palettePromises).then(([solidPalette, wallPalette, propPalette, waterPalette]) => {
-        statusEl.innerText = 'Parsing image structure...';
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = img.width; srcCanvas.height = img.height;
+    const srcCtx = srcCanvas.getContext('2d');
+    srcCtx.drawImage(img, 0, 0);
 
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width; canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-
-            // ── Analyse the image in tile-sized regions ──
-            // For each tile we compute: avg color, luminance, saturation, vertical position
-            const tileColors = [];
-            for (let ty = 0; ty < tileH; ty++) {
-                tileColors[ty] = [];
-                for (let tx = 0; tx < tileW; tx++) {
-                    const srcX = Math.floor((tx / tileW) * img.width);
-                    const srcY = Math.floor((ty / tileH) * img.height);
-                    const srcW = Math.max(1, Math.floor(img.width / tileW));
-                    const srcH = Math.max(1, Math.floor(img.height / tileH));
-
-                    const pixData = ctx.getImageData(srcX, srcY, srcW, srcH).data;
-                    let r=0, g=0, b=0, count=0;
-                    for (let i=0; i<pixData.length; i+=4) {
-                        if (pixData[i+3] > 64) { r+=pixData[i]; g+=pixData[i+1]; b+=pixData[i+2]; count++; }
-                    }
-                    if (count === 0) { tileColors[ty][tx] = { r:0, g:0, b:0, lum:0, sat:0, empty:true }; continue; }
-                    r=Math.round(r/count); g=Math.round(g/count); b=Math.round(b/count);
-                    const lum = 0.299*r + 0.587*g + 0.114*b;
-                    const max = Math.max(r,g,b), min = Math.min(r,g,b);
-                    const sat = max === 0 ? 0 : (max - min) / max;
-                    tileColors[ty][tx] = { r, g, b, lum, sat };
-                }
+    // ── Sample each tile region into tileColors[ty][tx] ──
+    const tileColors = [];
+    for (let ty = 0; ty < tileH; ty++) {
+        tileColors[ty] = [];
+        for (let tx = 0; tx < tileW; tx++) {
+            const srcX = Math.floor((tx / tileW) * img.width);
+            const srcY = Math.floor((ty / tileH) * img.height);
+            const srcW = Math.max(1, Math.floor(img.width  / tileW));
+            const srcH = Math.max(1, Math.floor(img.height / tileH));
+            const px = srcCtx.getImageData(srcX, srcY, srcW, srcH).data;
+            let r=0, g=0, b=0, cnt=0;
+            for (let i=0; i<px.length; i+=4) {
+                if (px[i+3] > 64) { r+=px[i]; g+=px[i+1]; b+=px[i+2]; cnt++; }
             }
+            if (cnt === 0) { tileColors[ty][tx] = { r:0,g:0,b:0,lum:0,sat:0,empty:true }; continue; }
+            r=Math.round(r/cnt); g=Math.round(g/cnt); b=Math.round(b/cnt);
+            const lum = 0.299*r + 0.587*g + 0.114*b;
+            const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+            const sat = mx === 0 ? 0 : (mx-mn)/mx;
+            tileColors[ty][tx] = { r, g, b, lum, sat };
+        }
+    }
 
-            // ── Detect sky region: top band of high-luminance, low-saturation tiles ──
-            // Find the lowest row where average luminance drops significantly
-            const rowLum = tileColors.map(row => {
-                const valid = row.filter(t => !t.empty);
-                return valid.length ? valid.reduce((s,t) => s + t.lum, 0) / valid.length : 0;
-            });
-            const globalMaxLum = Math.max(...rowLum);
-            // Horizon = first row that is significantly darker than the sky
-            let horizonY = Math.floor(tileH * 0.35); // default
-            for (let ty = 0; ty < tileH; ty++) {
-                if (rowLum[ty] < globalMaxLum * 0.65) { horizonY = ty; break; }
-            }
-
-            // ── Detect underground: dark region below a mid-point ──
-            const undergroundStartY = Math.min(tileH - 1, horizonY + Math.floor((tileH - horizonY) * 0.5));
-
-            // ── Build the world ──
-            saveHistory();
-            let placed = 0;
-
-            // Set sky atmosphere based on dominant sky color
-            if (horizonY > 0) {
-                const skyRow = tileColors[0];
-                const avgSkyR = skyRow.reduce((s,t) => s+(t.r||0), 0) / skyRow.length;
-                const avgSkyG = skyRow.reduce((s,t) => s+(t.g||0), 0) / skyRow.length;
-                const avgSkyB = skyRow.reduce((s,t) => s+(t.b||0), 0) / skyRow.length;
-                // Pick an atmosphere background based on sky color
-                const isDusk  = avgSkyR > 180 && avgSkyG < 120;
-                const isNight = avgSkyR < 80 && avgSkyG < 80 && avgSkyB < 100;
-                const atmNames = backgroundLibrary.filter(b => b.file).map(b => b.name);
-                let atmSearch = isNight ? 'night' : isDusk ? 'sunset' : 'sky';
-                const atmMatch = backgroundLibrary.find(b => b.name && b.name.toLowerCase().includes(atmSearch) && b.file);
-                if (atmMatch) setBackground(atmMatch.file);
-            }
-
-            for (let ty = 0; ty < tileH; ty++) {
-                for (let tx = 0; tx < tileW; tx++) {
-                    const tc = tileColors[ty][tx];
-                    if (tc.empty) continue;
-                    const wx = startX + tx, wy = startY + ty;
-                    if (wx >= GRID_X || wy >= GRID_Y) continue;
-                    if (!replace && (fgData[wx][wy] || bgData[wx][wy])) continue;
-
-                    const normY = ty / tileH; // 0 = top, 1 = bottom
-                    const isSkyBand    = ty < horizonY;
-                    const isSurface    = ty >= horizonY && ty < horizonY + 3;
-                    const isMidground  = ty >= horizonY + 3 && ty < undergroundStartY;
-                    const isUnderground = ty >= undergroundStartY;
-                    const isWater = tc.b > tc.r * 1.3 && tc.b > tc.g * 1.1 && tc.lum > 40;
-
-                    // ── SKY BAND: no fg block, optional light bg wall for clouds ──
-                    if (isSkyBand) {
-                        // Very light sky areas = open sky; slightly textured = cloud/fog wall
-                        if (tc.lum > 200 && tc.sat < 0.15) {
-                            // Open sky — nothing
-                        } else if (depth >= 2 && tc.lum > 150) {
-                            // Subtle sky wall
-                            const bgMatch = findClosestBlock(tc.r, tc.g, tc.b, wallPalette);
-                            if (bgMatch) {
-                                const blk = bgMatch.block;
-                                bgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                placed++;
-                            }
-                        }
-                        continue;
-                    }
-
-                    // ── WATER detection ──
-                    if (isWater && depth >= 2 && waterPalette.length > 0) {
-                        const wMatch = findClosestBlock(tc.r, tc.g, tc.b, waterPalette);
-                        if (wMatch) {
-                            const blk = wMatch.block;
-                            fgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                            placed++;
-                            continue;
-                        }
-                    }
-
-                    // ── SURFACE LAYER: solid fg blocks matching terrain color ──
-                    if (isSurface) {
-                        const fgMatch = findClosestBlock(tc.r, tc.g, tc.b, solidPalette);
-                        if (fgMatch) {
-                            const blk = fgMatch.block;
-                            fgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                            placed++;
-                        }
-                        if (depth >= 2 && wallPalette.length > 0) {
-                            const bgMatch = findClosestBlock(tc.r * 0.7, tc.g * 0.7, tc.b * 0.7, wallPalette);
-                            if (bgMatch) {
-                                const blk = bgMatch.block;
-                                bgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                placed++;
-                            }
-                        }
-                        continue;
-                    }
-
-                    // ── MIDGROUND: blend fg and bg based on luminance ──
-                    if (isMidground) {
-                        // Bright areas = open space with walls behind; dark = solid blocks
-                        if (tc.lum > 140) {
-                            // Open midground with wall
-                            if (depth >= 2 && wallPalette.length > 0) {
-                                const bgMatch = findClosestBlock(tc.r, tc.g, tc.b, wallPalette);
-                                if (bgMatch) {
-                                    const blk = bgMatch.block;
-                                    bgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                    placed++;
-                                }
-                            }
-                            // Depth 3: add props in open midground areas
-                            if (depth >= 3 && propPalette.length > 0 && Math.random() < 0.08) {
-                                const propMatch = findClosestBlock(tc.r, tc.g, tc.b, propPalette);
-                                if (propMatch) {
-                                    const blk = propMatch.block;
-                                    fgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                    placed++;
-                                }
-                            }
-                        } else {
-                            // Dense midground — solid block
-                            const fgMatch = findClosestBlock(tc.r, tc.g, tc.b, solidPalette);
-                            if (fgMatch) {
-                                const blk = fgMatch.block;
-                                fgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                placed++;
-                            }
-                            if (depth >= 2 && wallPalette.length > 0) {
-                                // Slightly darker tinted wall behind solid fg
-                                const bgMatch = findClosestBlock(Math.round(tc.r*0.6), Math.round(tc.g*0.6), Math.round(tc.b*0.6), wallPalette);
-                                if (bgMatch) {
-                                    const blk = bgMatch.block;
-                                    bgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                    placed++;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // ── UNDERGROUND: darker, always has bg wall, fg for very dark areas ──
-                    if (isUnderground) {
-                        const darkR = Math.round(tc.r * 0.5), darkG = Math.round(tc.g * 0.5), darkB = Math.round(tc.b * 0.5);
-                        if (depth >= 2 && wallPalette.length > 0) {
-                            const bgMatch = findClosestBlock(darkR, darkG, darkB, wallPalette);
-                            if (bgMatch) {
-                                const blk = bgMatch.block;
-                                bgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                placed++;
-                            }
-                        }
-                        if (tc.lum < 100) {
-                            // Dark enough = solid underground block
-                            const fgMatch = findClosestBlock(tc.r, tc.g, tc.b, solidPalette);
-                            if (fgMatch) {
-                                const blk = fgMatch.block;
-                                fgData[wx][wy] = { name: blk.label, texture: blk.texture || `textures/blocks/${blk.folder}/${blk.file}`, type: blk.type, fileName: blk.file };
-                                placed++;
-                            }
-                        }
-                    }
-                }
-            }
-
-            drawCanvas();
-            statusEl.style.color = '#4ade80';
-            statusEl.innerText = `✅ World generated! ${placed} blocks placed.`;
-            btn.disabled = false; btn.innerText = '🎨 Generate World from Image';
-        };
-        img.src = i2wGenImgData;
+    // ── Detect horizon (sky/ground boundary) ──
+    const rowLum = tileColors.map(row => {
+        const valid = row.filter(t => !t.empty);
+        return valid.length ? valid.reduce((s,t) => s+t.lum, 0) / valid.length : 0;
     });
+    const globalMaxLum = Math.max(...rowLum);
+    let horizonY = Math.floor(tileH * 0.35);
+    for (let ty = 0; ty < tileH; ty++) {
+        if (rowLum[ty] < globalMaxLum * 0.65) { horizonY = ty; break; }
+    }
+    const undergroundStartY = Math.min(tileH - 1, horizonY + Math.floor((tileH - horizonY) * 0.5));
+
+    // ── Water zone detection: column-based region analysis ──
+    // A tile is "blue-water" if its blue channel dominates.
+    // We then flood-fill contiguous blue regions so that creatures
+    // (jellyfish, pufferfish etc.) that sit inside a water column
+    // are treated as water tiles even if they aren't blue themselves.
+    const isRawWater = (tc) => !tc.empty && tc.b > tc.r * 1.15 && tc.b > tc.g * 1.05 && tc.lum > 30;
+
+    // Build a 2D boolean grid of water zones via flood-fill from raw-water seeds
+    const waterZone = Array.from({length: tileH}, () => new Uint8Array(tileW));
+    const visited   = Array.from({length: tileH}, () => new Uint8Array(tileW));
+    const queue = [];
+    for (let ty = 0; ty < tileH; ty++)
+        for (let tx = 0; tx < tileW; tx++)
+            if (isRawWater(tileColors[ty][tx])) { waterZone[ty][tx] = 1; queue.push([ty,tx]); }
+
+    // BFS expand: a non-blue neighbour inside the water region is still water
+    // (catches the creature tiles that interrupt the blue fill)
+    while (queue.length) {
+        const [ty, tx] = queue.shift();
+        const neighbors = [[ty-1,tx],[ty+1,tx],[ty,tx-1],[ty,tx+1]];
+        for (const [ny, nx] of neighbors) {
+            if (ny < 0 || ny >= tileH || nx < 0 || nx >= tileW) continue;
+            if (visited[ny][nx]) continue;
+            visited[ny][nx] = 1;
+            const ntc = tileColors[ny][nx];
+            if (ntc.empty) continue;
+            // Expand if: raw water, OR surrounded enough by water (creature tile inside pool)
+            // Heuristic: allow expansion if neighbour lum > 30 (not pitch-black rock)
+            //            and it isn't obviously a bright sky/surface tile
+            if (isRawWater(ntc) || (!ntc.empty && ntc.lum > 25 && ntc.lum < 220 && waterZone[ty][tx])) {
+                waterZone[ny][nx] = 1;
+                queue.push([ny, nx]);
+            }
+        }
+    }
+
+    // ── Atmosphere: pick background by color-distance from sky region ──
+    // Each background has a known average color (sampled from its orb texture).
+    // We average the top ~25% of the image (the sky band) and find the closest match.
+    {
+        const BGS = [
+            { file: 'Alien.png',     r:70,  g:37,  b:86  },
+            { file: 'Candy.png',     r:225, g:168, b:224 },
+            { file: 'Cemetery.png',  r:8,   g:27,  b:37  },
+            { file: 'City.png',      r:28,  g:28,  b:40  },
+            { file: 'Forest.png',    r:30,  g:118, b:137 },
+            { file: 'Night.png',     r:10,  g:40,  b:49  },
+            { file: 'Sand.png',      r:181, g:188, b:186 },
+            { file: 'Star.png',      r:0,   g:14,  b:23  },
+            { file: 'SummerSky.png', r:134, g:204, b:232 },
+            { file: 'Winter.png',    r:155, g:206, b:233 },
+        ];
+        // Sample sky region: top 25% of image rows, all columns
+        const skyDepth = Math.max(1, Math.floor(tileH * 0.25));
+        let sr=0, sg=0, sb=0, sc=0;
+        for (let ty=0; ty < skyDepth; ty++) {
+            for (let tx=0; tx < tileW; tx++) {
+                const t = tileColors[ty][tx];
+                if (!t.empty) { sr+=t.r; sg+=t.g; sb+=t.b; sc++; }
+            }
+        }
+        if (sc > 0) {
+            sr=Math.round(sr/sc); sg=Math.round(sg/sc); sb=Math.round(sb/sc);
+            let bestBg = null, bestDist = Infinity;
+            for (const bg of BGS) {
+                const dr=sr-bg.r, dg=sg-bg.g, db=sb-bg.b;
+                const dist = dr*dr + dg*dg + db*db;
+                if (dist < bestDist) { bestDist = dist; bestBg = bg; }
+            }
+            if (bestBg) setBackground(bestBg.file);
+        }
+    }
+
+    saveHistory();
+    let placed = 0;
+
+    // ── Main placement loop — yield every row to avoid UI freeze ──
+    for (let ty = 0; ty < tileH; ty++) {
+        // Yield every row so the browser stays responsive
+        await yieldFrame();
+        statusEl.innerText = `Placing blocks... row ${ty+1}/${tileH} (${placed} placed)`;
+
+        for (let tx = 0; tx < tileW; tx++) {
+            const tc = tileColors[ty][tx];
+            if (tc.empty) continue;
+            const wx = startX + tx, wy = startY + ty;
+            if (wx >= GRID_X || wy >= GRID_Y) continue;
+            if (!replace && (fgData[wx][wy] || bgData[wx][wy])) continue;
+
+            const isSkyBand     = ty < horizonY;
+            const isSurface     = ty >= horizonY && ty < horizonY + 3;
+            const isMidground   = ty >= horizonY + 3 && ty < undergroundStartY;
+            const isUnderground = ty >= undergroundStartY;
+            // Use flood-fill zone map — catches creatures inside water too
+            const inWater = !!waterZone[ty][tx];
+
+            // ── SKY ──
+            if (isSkyBand) {
+                if (tc.lum <= 200 || tc.sat >= 0.15) {
+                    if (depth >= 2) placed += placeBlock(wallPalette, tc.r, tc.g, tc.b, wx, wy, 'bg');
+                }
+                continue;
+            }
+
+            // ── WATER ZONE (including creatures inside water) ──
+            if (inWater && depth >= 2 && waterPalette.length > 0) {
+                // Always lay a water fg block for the zone
+                placed += placeBlock(waterPalette, tc.r, tc.g, tc.b, wx, wy, 'fg');
+                // Add a water-tinted wall behind
+                if (wallPalette.length > 0)
+                    placed += placeBlock(wallPalette, Math.round(tc.r*0.5), Math.round(tc.g*0.6), Math.round(tc.b*0.9), wx, wy, 'bg');
+                continue;
+            }
+
+            // ── SURFACE ──
+            if (isSurface) {
+                placed += placeBlock(solidPalette, tc.r, tc.g, tc.b, wx, wy, 'fg');
+                if (depth >= 2)
+                    placed += placeBlock(wallPalette, Math.round(tc.r*0.7), Math.round(tc.g*0.7), Math.round(tc.b*0.7), wx, wy, 'bg');
+                continue;
+            }
+
+            // ── MIDGROUND ──
+            if (isMidground) {
+                if (tc.lum > 140) {
+                    if (depth >= 2) placed += placeBlock(wallPalette, tc.r, tc.g, tc.b, wx, wy, 'bg');
+                    if (depth >= 3 && Math.random() < 0.08)
+                        placed += placeBlock(propPalette, tc.r, tc.g, tc.b, wx, wy, 'fg');
+                } else {
+                    placed += placeBlock(solidPalette, tc.r, tc.g, tc.b, wx, wy, 'fg');
+                    if (depth >= 2)
+                        placed += placeBlock(wallPalette, Math.round(tc.r*0.6), Math.round(tc.g*0.6), Math.round(tc.b*0.6), wx, wy, 'bg');
+                }
+                continue;
+            }
+
+            // ── UNDERGROUND ──
+            if (isUnderground) {
+                if (depth >= 2)
+                    placed += placeBlock(wallPalette, Math.round(tc.r*0.5), Math.round(tc.g*0.5), Math.round(tc.b*0.5), wx, wy, 'bg');
+                if (tc.lum < 100)
+                    placed += placeBlock(solidPalette, tc.r, tc.g, tc.b, wx, wy, 'fg');
+            }
+        }
+
+        // Redraw every 5 rows so the user can watch it build
+        if (ty % 5 === 0) drawCanvas();
+    }
+
+    drawCanvas();
+    statusEl.style.color = '#4ade80';
+    statusEl.innerText = `✅ World generated! ${placed} blocks placed.`;
+    btn.disabled = false; btn.innerText = '🎨 Generate World from Image';
 };
