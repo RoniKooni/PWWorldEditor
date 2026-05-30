@@ -51,6 +51,51 @@ input:checked + .slider:before { transform: translateX(20px); }
 .hidden { display: none !important; }
 #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 105; backdrop-filter: blur(3px); }
 
+/* Selection canvas overlay */
+#selectionCanvas {
+    position: absolute;
+    top: 0; left: 0;
+    image-rendering: pixelated;
+    pointer-events: none;
+    z-index: 5;
+    transform-origin: top left;
+}
+
+/* Floating selection toolbar */
+#sel-toolbar {
+    position: absolute;
+    bottom: 160px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    background: rgba(10, 10, 10, 0.92);
+    border: 1px solid #3abdc2;
+    border-radius: 10px;
+    padding: 8px 12px;
+    z-index: 150;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 0 20px rgba(58,189,194,0.2);
+}
+.sel-tb-btn {
+    background: #1a1a1a;
+    border: 1px solid #444;
+    color: #ccc;
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: 0.15s;
+}
+.sel-tb-btn:hover { background: #252525; border-color: #3abdc2; color: #fff; }
+.sel-tb-btn.danger { border-color: #ff4444; color: #ff8888; }
+.sel-tb-btn.danger:hover { background: rgba(255,68,68,0.15); }
+.sel-tb-btn.muted { border-color: #333; color: #666; }
+.sel-tb-btn.muted:hover { border-color: #555; color: #aaa; background: #222; }
+.sel-tb-btn.active { border-color: #3abdc2; color: #3abdc2; background: rgba(58,189,194,0.1); }
+
 #coords-display { position: absolute; top: 20px; right: 20px; background: rgba(10, 10, 10, 0.85); border: 1px solid #333; padding: 8px 15px; border-radius: 8px; color: #3abdc2; font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 200; box-shadow: 0 4px 10px rgba(0,0,0,0.5); letter-spacing: 1px;}
 #inv-filter-tabs { display: flex; gap: 4px; margin-bottom: 14px; background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 4px; }
 .inv-filter-btn { flex: 1; padding: 7px 4px; background: transparent; border: none; color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; transition: 0.15s; white-space: nowrap; letter-spacing: 0.3px; }
