@@ -4,17 +4,6 @@ const BASE_PATH = 'textures/blocks/';
 let globalFrame = 0;
 setInterval(() => { globalFrame++; }, 150);
 
-// ── Performance: dirty-flag rendering ──
-// Set needsRedraw = true whenever world data changes.
-// The render loop skips repainting if nothing changed.
-let needsRedraw = true;
-let _lastGlobalFrame = -1;
-function markDirty() { needsRedraw = true; }
-
-// Target 30 fps (16ms → 60fps, 33ms → 30fps).
-// Halves GPU/CPU load with no visible quality loss for a tile editor.
-const TARGET_FRAME_MS = 33;
-
 let blockLibrary = [];
 const backgroundLibrary = [
     { name: 'None', file: null, icon: 'textures/ui/SoilBlueprint.png' },
@@ -133,7 +122,6 @@ function undo() {
         redoStack.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), atm: activeAtmosphere });
         const state = history.pop();
         fgData = state.fg; bgData = state.bg; setBackground(state.atm);
-        markDirty();
     }
 }
 
@@ -142,7 +130,6 @@ function redo() {
         history.push({ fg: JSON.parse(JSON.stringify(fgData)), bg: JSON.parse(JSON.stringify(bgData)), atm: activeAtmosphere });
         const state = redoStack.pop();
         fgData = state.fg; bgData = state.bg; setBackground(state.atm);
-        markDirty();
     }
 }
 
@@ -200,7 +187,6 @@ function placeBlockAt(x, y, block) {
     }
 
     fgData[x][y] = cloneBlock(block);
-    markDirty();
 }
 
 function setBackground(bgFile) {
@@ -211,10 +197,9 @@ function setBackground(bgFile) {
         const el = document.getElementById('custom-bg-preview');
         if (el) el.classList.add('hidden');
     }
-    markDirty();
 }
 
-function updateTransform() { canvas.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`; if (typeof window._syncSelTransform === 'function') window._syncSelTransform(); if (typeof updateRefOverlay === 'function') updateRefOverlay(); markDirty(); }
+function updateTransform() { canvas.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`; }
 
 // ── Inventory state ──
 let invFilterFolder = 'all'; // current folder filter for main inventory
@@ -634,7 +619,6 @@ window.onmousemove = (e) => {
         updateTransform();
     } else if (isDrawing && activeTool !== 'shapes') {
         handlePlace(e);
-        markDirty();
     }
 
     const rect = canvas.getBoundingClientRect();
@@ -691,7 +675,6 @@ function floodFill(x, y, block) {
         else layer[cx][cy] = null;
         stack.push([cx+1, cy], [cx-1, cy], [cx, cy+1], [cx, cy-1]);
     }
-    markDirty();
 }
 
 function drawShape(x1, y1, x2, y2) {
@@ -717,31 +700,9 @@ function drawShape(x1, y1, x2, y2) {
 const SHADOW_OFFSET = 8;  // px offset to bottom-right
 const SHADOW_ALPHA  = 0.35; // translucency of shadow
 
-let _lastRenderTime = 0;
-
 function render(time) {
-    // FPS cap: skip frame if not enough time has passed
-    if (time - _lastRenderTime < TARGET_FRAME_MS && !needsRedraw) {
-        requestAnimationFrame(render);
-        return;
-    }
-    // Also throttle the raw repaint itself to TARGET_FRAME_MS
-    if (time - _lastRenderTime < TARGET_FRAME_MS) {
-        requestAnimationFrame(render);
-        return;
-    }
-    _lastRenderTime = time;
-    needsRedraw = false;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const glowAlpha = (Math.sin(time * 0.002) + 1) / 2;
-
-    // If any animated blocks or glow blocks are present, keep re-rendering
-    // We do a lightweight check: if globalFrame changed since last render, mark dirty
-    if (globalFrame !== _lastGlobalFrame) { _lastGlobalFrame = globalFrame; needsRedraw = true; }
-
-    // Selection tool: marching ants need continuous redraws
-    if (activeTool === 'select' && window._hasSel) { needsRedraw = true; }
 
     // ── Pass 1: draw background blocks (walls only, not water) ──
     for (let x = 0; x < GRID_X; x++) {
@@ -932,9 +893,6 @@ function render(time) {
         }
         ctx.lineWidth = 1;
     }
-
-    // Draw selection overlay (merged into main loop — no separate RAF)
-    if (typeof window._drawSelection === 'function') window._drawSelection();
 
     requestAnimationFrame(render);
 }
@@ -1160,6 +1118,8 @@ render();
     // ── Draw selection overlay ─────────────────────────────
     function drawSelection() {
         selCtx.clearRect(0, 0, selCanvas.width, selCanvas.height);
+
+        // Rubber-band in progress
         if (selDrag && activeTool === 'select') {
             const r = normRect(selDrag);
             selCtx.save();
@@ -1238,18 +1198,16 @@ render();
             selCtx.restore();
         }
 
-        // drawSelection is now called from the main render loop (no separate RAF loop)
+        requestAnimationFrame(drawSelection);
     }
-    // Expose to main render for marching ants dirty-flag check
-    Object.defineProperty(window, '_hasSel', { get: () => !!(sel || selDrag), configurable: true });
+    requestAnimationFrame(drawSelection);
 
-    // Expose so the main render loop can call it
-    window._drawSelection = drawSelection;
-
-    // syncSelTransform is now called from updateTransform (no separate RAF loop)
-    window._syncSelTransform = function() {
+    // Keep selCanvas transform in sync with worldCanvas
+    function syncSelTransform() {
         selCanvas.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
-    };
+        requestAnimationFrame(syncSelTransform);
+    }
+    requestAnimationFrame(syncSelTransform);
 
     // ── updateToolState patch ─────────────────────────────
     const _origUpdateToolState = updateToolState;
@@ -1518,7 +1476,10 @@ function updateRefOverlay() {
     refOverlayEl.style.transform = `translate(${posX + ox * scale}px, ${posY + oy * scale}px) scale(${scale * sc})`;
 }
 
-// updateRefOverlay is called on-demand (pan/zoom/upload) — no polling loop needed.
+// Hook into updateTransform to also update overlay
+const _origUpdateTransform = updateTransform;
+// We override by patching after the fact
+setInterval(updateRefOverlay, 50);
 
 document.getElementById('ref-overlay-btn').onclick = () => openMenu('ref-overlay-popup');
 document.getElementById('ref-upload-btn').onclick = () => document.getElementById('ref-overlay-input').click();
