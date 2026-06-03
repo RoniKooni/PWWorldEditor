@@ -76,6 +76,16 @@
         <button data-layer-action="move-down">Move Down</button>
         <button data-layer-action="delete" class="danger">Delete</button>
     </div>
+    <div id="arrange-context-menu" class="layer-context-menu arrange-context-menu hidden">
+        <button data-arrange-action="toggle-visible"><span class="menu-label">Hide layer</span></button>
+        <button data-arrange-action="toggle-lock"><span class="menu-label">Lock layer</span></button>
+        <button data-arrange-action="cut-layer"><span>Cut layer</span><span class="menu-shortcut">Ctrl+X</span></button>
+        <button data-arrange-action="copy-layer"><span>Copy layer</span><span class="menu-shortcut">Ctrl+C</span></button>
+        <button data-arrange-action="paste-layer"><span>Paste layer</span><span class="menu-shortcut">Ctrl+V</span></button>
+        <button data-arrange-action="duplicate"><span>Duplicate layer</span><span class="menu-shortcut">Ctrl+D</span></button>
+        <button data-arrange-action="invert-image"><span>Invert image</span></button>
+        <button data-arrange-action="delete" class="danger"><span>Delete layer</span><span class="menu-shortcut">DEL</span></button>
+    </div>
 
     <div id="hotbar-container">
         <div id="selection-display"><span id="block-name">Tool: Move</span></div>
@@ -84,7 +94,7 @@
             <div class="slot" data-slot="3"></div><div class="slot" data-slot="4"></div>
             <div class="slot" data-slot="5"></div><div class="slot" data-slot="6"></div>
             <div class="slot" data-slot="7"></div><div class="slot" data-slot="8"></div>
-            <div class="slot" data-slot="9"></div>
+            <div class="slot" data-slot="9"></div><div class="slot" data-slot="0"></div>
         </div>
     </div>
 
@@ -119,7 +129,7 @@
             <p>- Select creates a box selection when you hold and drag.</p>
             <p><strong>Hotkeys:</strong></p>
             <p>- Default: M Move, A Arrange, Q Select, F Fill, S Shapes, K Pick.</p>
-            <p>- 1-9 selects hotbar slots.</p>
+            <p>- 0-9 selects hotbar slots.</p>
             <p>- Ctrl+Z undo, Ctrl+Y redo.</p>
             <p>- Open View > Settings to change grid color, animated blocks, and keybinds.</p>
         </div>
@@ -382,6 +392,6 @@
 </div>
 
 <script src="asset_list.js"></script>
-<script src="script.js?v=settings-popup-1"></script>
+<script src="script.js?v=shadow-overlap-bg-1"></script>
 </body>
 </html>
