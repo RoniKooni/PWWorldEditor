@@ -21,6 +21,7 @@ const viewport = document.getElementById('viewport');
 
 let fgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let bgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
+let waterData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let protectedFgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let history = [], redoStack = [];
 let historyTimeline = [];
@@ -46,11 +47,11 @@ let getArrangeSelectionCount = () => 0;
 let activeAtmosphere = null;
 let customBgDataUrl = null;
 let layerSeq = 1;
-let editorLayers = [{ id: layerSeq++, name: 'Layer 1', fg: fgData, bg: bgData, visible: true, locked: false }];
+let editorLayers = [{ id: layerSeq++, name: 'Layer 1', fg: fgData, bg: bgData, water: waterData, visible: true, locked: false }];
 let activeLayerId = editorLayers[0].id;
 let selectedLayerId = activeLayerId;
 
-let activeTool = 'move', activeSlot = 0;
+let activeTool = 'move', activeSlot = 1;
 let hotbar = Array(10).fill(null);
 let bucketBlock = null, shapeBlock = null;
 let targetBlockForReplace = null;
@@ -91,6 +92,7 @@ const KEYBIND_LABELS = {
     history: 'History Tab',
     settings: 'Settings Tab'
 };
+const HOTBAR_SLOT_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 let appSettings = loadAppSettings();
 let keybindListeningFor = null;
 
@@ -102,6 +104,26 @@ function cloneGrid(grid) {
     return JSON.parse(JSON.stringify(grid));
 }
 
+function makeLayer(name = `Layer ${editorLayers.length + 1}`) {
+    return { id: layerSeq++, name, fg: makeGrid(), bg: makeGrid(), water: makeGrid(), visible: true, locked: false };
+}
+
+function splitLegacyWaterLayers(fg, bg, water = makeGrid()) {
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            if (isWaterBlock(bg[x][y])) {
+                water[x][y] = bg[x][y];
+                bg[x][y] = null;
+            }
+            if (isWaterBlock(fg[x][y])) {
+                water[x][y] = fg[x][y];
+                fg[x][y] = null;
+            }
+        }
+    }
+    return { fg, bg, water };
+}
+
 function loadAppSettings() {
     const fallback = {
         gridColor: '#dc2828',
@@ -110,10 +132,14 @@ function loadAppSettings() {
     };
     try {
         const saved = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+        const keybinds = { ...fallback.keybinds, ...(saved.keybinds || {}) };
+        Object.keys(keybinds).forEach(command => {
+            if (/(^|\+)[0-9]$/.test(keybinds[command])) keybinds[command] = '';
+        });
         return {
             gridColor: saved.gridColor || fallback.gridColor,
             animatedBlocks: saved.animatedBlocks !== false,
-            keybinds: { ...fallback.keybinds, ...(saved.keybinds || {}) }
+            keybinds
         };
     } catch {
         return fallback;
@@ -153,6 +179,15 @@ function keybindMatches(e, keybind) {
     return !!keybind && eventToKeybind(e) === keybind;
 }
 
+function isReservedHotbarKeybind(keybind) {
+    return /(^|\+)[0-9]$/.test(keybind);
+}
+
+function getNextHotbarSlot() {
+    const emptySlot = HOTBAR_SLOT_ORDER.find(slot => hotbar[slot] === null);
+    return emptySlot ?? activeSlot;
+}
+
 function cloneArrangeRegion(region) {
     if (!region) return null;
     return {
@@ -161,7 +196,8 @@ function cloneArrangeRegion(region) {
         w: region.w,
         h: region.h,
         fg: cloneGrid(region.fg),
-        bg: cloneGrid(region.bg)
+        bg: cloneGrid(region.bg),
+        water: cloneGrid(region.water || makeGrid())
     };
 }
 
@@ -181,9 +217,11 @@ function clearProtectedRowsFromLayers() {
     editorLayers.forEach(layer => {
         clearProtectedRowsFromGrid(layer.fg);
         clearProtectedRowsFromGrid(layer.bg);
+        clearProtectedRowsFromGrid(layer.water || makeGrid());
     });
     clearProtectedRowsFromGrid(fgData);
     clearProtectedRowsFromGrid(bgData);
+    clearProtectedRowsFromGrid(waterData);
 }
 
 function activeLayer() {
@@ -194,7 +232,7 @@ function ensureActiveLayer() {
     let layer = activeLayer();
     if (layer) return layer;
 
-    layer = { id: layerSeq++, name: `Layer ${editorLayers.length + 1}`, fg: makeGrid(), bg: makeGrid(), visible: true, locked: false };
+    layer = makeLayer(`Layer ${editorLayers.length + 1}`);
     editorLayers.push(layer);
     activeLayerId = layer.id;
     selectedLayerId = layer.id;
@@ -228,12 +266,18 @@ function normalizeLayerIds(layers, savedLayerSeq = 1) {
             id = nextId++;
         }
         usedIds.add(id);
+        const split = splitLegacyWaterLayers(
+            cloneGrid(layer.fg || makeGrid()),
+            cloneGrid(layer.bg || makeGrid()),
+            cloneGrid(layer.water || makeGrid())
+        );
 
         return {
             id,
             name: layer.name || `Layer ${index + 1}`,
-            fg: cloneGrid(layer.fg || makeGrid()),
-            bg: cloneGrid(layer.bg || makeGrid()),
+            fg: split.fg,
+            bg: split.bg,
+            water: split.water,
             visible: layer.visible !== false,
             locked: !!layer.locked,
             arrangeRegion: cloneArrangeRegion(layer.arrangeRegion || layer._arrangeRegion),
@@ -247,6 +291,7 @@ function syncActiveLayerRefs() {
     if (!layer) return;
     layer.fg = fgData;
     layer.bg = bgData;
+    layer.water = waterData;
 }
 
 function setActiveLayer(id, options = {}) {
@@ -258,6 +303,8 @@ function setActiveLayer(id, options = {}) {
     layerDeleteTargetId = layer.id;
     fgData = layer.fg;
     bgData = layer.bg;
+    waterData = layer.water || makeGrid();
+    layer.water = waterData;
     renderLayerPanel();
 }
 
@@ -283,7 +330,7 @@ function selectLayerFromPanel(id, event = null) {
         return;
     }
     if (window.selectionActions) window.selectionActions.deselect();
-    if (activeTool === 'select') selectSlot(0);
+    if (activeTool === 'select') updateToolState('move');
     selectedLayerId = id;
     layerDeleteTargetId = id;
     layerPanelHasFocus = true;
@@ -299,6 +346,7 @@ function captureEditorState() {
             name: layer.name,
             fg: cloneGrid(layer.fg),
             bg: cloneGrid(layer.bg),
+            water: cloneGrid(layer.water || makeGrid()),
             visible: layer.visible,
             locked: layer.locked,
             arrangeRegion: cloneArrangeRegion(layer.arrangeRegion),
@@ -321,7 +369,12 @@ function restoreEditorState(state) {
         layerDeleteTargetId = activeLayerId;
         layerSeq = Math.max(Number(state.layerSeq) || 1, editorLayers.length ? Math.max(...editorLayers.map(layer => layer.id)) + 1 : 1);
     } else {
-        editorLayers = [{ id: layerSeq++, name: 'Layer 1', fg: cloneGrid(state.fg || makeGrid()), bg: cloneGrid(state.bg || makeGrid()), visible: true, locked: false }];
+        const split = splitLegacyWaterLayers(
+            cloneGrid(state.fg || makeGrid()),
+            cloneGrid(state.bg || makeGrid()),
+            cloneGrid(state.water || makeGrid())
+        );
+        editorLayers = [{ id: layerSeq++, name: 'Layer 1', fg: split.fg, bg: split.bg, water: split.water, visible: true, locked: false }];
         activeLayerId = editorLayers[0].id;
         selectedLayerId = activeLayerId;
         layerDeleteTargetId = activeLayerId;
@@ -332,6 +385,7 @@ function restoreEditorState(state) {
     else {
         fgData = makeGrid();
         bgData = makeGrid();
+        waterData = makeGrid();
     }
     if (state.customBg) applyCustomBackground(state.customBg, false);
     else setBackground(state.atm);
@@ -342,16 +396,18 @@ function composeVisibleLayers() {
     syncActiveLayerRefs();
     const fg = makeGrid();
     const bg = makeGrid();
+    const water = makeGrid();
     editorLayers.forEach(layer => {
         if (!layer.visible) return;
         for (let x = 0; x < GRID_X; x++) {
             for (let y = 0; y < GRID_Y; y++) {
                 if (layer.bg[x][y]) bg[x][y] = layer.bg[x][y];
                 if (layer.fg[x][y]) fg[x][y] = layer.fg[x][y];
+                if (layer.water?.[x]?.[y]) water[x][y] = layer.water[x][y];
             }
         }
     });
-    return { fg, bg };
+    return { fg, bg, water };
 }
 
 function renderLayerPanel() {
@@ -392,7 +448,8 @@ function renderLayerPanel() {
         row.oncontextmenu = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            selectLayerFromPanel(layer.id);
+            const arrangeSelectionIds = getArrangePanelSelectionIds?.() || arrangePanelSelectionIds;
+            if (!arrangeSelectionIds.has(layer.id)) selectLayerFromPanel(layer.id);
             showLayerContextMenu(e.clientX, e.clientY, layer.id);
         };
         row.ondragstart = (e) => {
@@ -506,8 +563,10 @@ function drawLayerThumbnail(layer, canvasEl) {
         for (let y = 0; y < GRID_Y; y++) {
             const bg = layer.bg[x][y];
             const fg = layer.fg[x][y];
+            const water = layer.water?.[x]?.[y];
             if (bg) drawLayerThumbCell(tctx, bg, x * cellW, y * cellH, cellW, cellH, '#315071');
             if (fg) drawLayerThumbCell(tctx, fg, x * cellW, y * cellH, cellW, cellH, '#31c7c9');
+            if (water) drawLayerThumbCell(tctx, water, x * cellW, y * cellH, cellW, cellH, '#2c7fd1');
         }
     }
 }
@@ -532,7 +591,7 @@ function getLayerContentBounds(layer) {
     let minX = GRID_X, minY = GRID_Y, maxX = -1, maxY = -1;
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
-            if (!layer.fg[x][y] && !layer.bg[x][y]) continue;
+            if (!layer.fg[x][y] && !layer.bg[x][y] && !layer.water?.[x]?.[y]) continue;
             minX = Math.min(minX, x);
             minY = Math.min(minY, y);
             maxX = Math.max(maxX, x);
@@ -548,24 +607,49 @@ function findTopLayerAtTile(x, y) {
     for (let i = editorLayers.length - 1; i >= 0; i--) {
         const layer = editorLayers[i];
         if (!layer.visible) continue;
-        if (layer.fg[x]?.[y] || layer.bg[x]?.[y]) return layer;
+        if (layer.fg[x]?.[y] || layer.bg[x]?.[y] || layer.water?.[x]?.[y]) return layer;
     }
     return null;
 }
 
 function hideLayerContextMenu() {
     document.getElementById('layer-context-menu')?.classList.add('hidden');
+    document.getElementById('arrange-context-menu')?.classList.add('hidden');
 }
 
 function showLayerContextMenu(x, y, layerId) {
     const menu = document.getElementById('layer-context-menu');
     if (!menu) return;
+    document.getElementById('arrange-context-menu')?.classList.add('hidden');
     menu.dataset.layerId = layerId;
     menu.classList.remove('hidden');
     const maxX = window.innerWidth - menu.offsetWidth - 6;
     const maxY = window.innerHeight - menu.offsetHeight - 6;
     menu.style.left = `${Math.max(6, Math.min(x, maxX))}px`;
     menu.style.top = `${Math.max(30, Math.min(y, maxY))}px`;
+}
+
+function setMenuPosition(menu, x, y) {
+    const maxX = window.innerWidth - menu.offsetWidth - 6;
+    const maxY = window.innerHeight - menu.offsetHeight - 6;
+    menu.style.left = `${Math.max(6, Math.min(x, maxX))}px`;
+    menu.style.top = `${Math.max(30, Math.min(y, maxY))}px`;
+}
+
+function showArrangeContextMenu(x, y, layerId) {
+    const menu = document.getElementById('arrange-context-menu');
+    if (!menu) return;
+    document.getElementById('layer-context-menu')?.classList.add('hidden');
+    const targets = getLayerActionTargets(layerId);
+    const anyVisible = targets.some(layer => layer.visible !== false);
+    const anyUnlocked = targets.some(layer => !layer.locked);
+    const visibilityLabel = menu.querySelector('[data-arrange-action="toggle-visible"] .menu-label');
+    const lockLabel = menu.querySelector('[data-arrange-action="toggle-lock"] .menu-label');
+    if (visibilityLabel) visibilityLabel.textContent = anyVisible ? 'Hide layer' : 'Show layer';
+    if (lockLabel) lockLabel.textContent = anyUnlocked ? 'Lock layer' : 'Unlock layer';
+    menu.dataset.layerId = layerId;
+    menu.classList.remove('hidden');
+    setMenuPosition(menu, x, y);
 }
 
 function startRenameLayer(layerId) {
@@ -588,7 +672,7 @@ function finishRenameLayer(layerId, value) {
 function addLayer() {
     saveHistory('New Layer');
     syncActiveLayerRefs();
-    const layer = { id: layerSeq++, name: `Layer ${editorLayers.length + 1}`, fg: makeGrid(), bg: makeGrid(), visible: true, locked: false };
+    const layer = makeLayer(`Layer ${editorLayers.length + 1}`);
     const activeIndex = editorLayers.findIndex(item => item.id === activeLayerId);
     editorLayers.splice(activeIndex + 1, 0, layer);
     setActiveLayer(layer.id);
@@ -598,7 +682,7 @@ function duplicateLayer() {
     const source = activeLayer();
     if (!source) return;
     saveHistory('Duplicate Layer');
-    const layer = { id: layerSeq++, name: `${source.name} copy`, fg: cloneGrid(source.fg), bg: cloneGrid(source.bg), visible: true, locked: false, arrangeRegion: cloneArrangeRegion(source.arrangeRegion), resizeOriginal: cloneArrangeRegion(source.resizeOriginal) };
+    const layer = { id: layerSeq++, name: `${source.name} copy`, fg: cloneGrid(source.fg), bg: cloneGrid(source.bg), water: cloneGrid(source.water || makeGrid()), visible: true, locked: false, arrangeRegion: cloneArrangeRegion(source.arrangeRegion), resizeOriginal: cloneArrangeRegion(source.resizeOriginal) };
     const activeIndex = editorLayers.findIndex(item => item.id === source.id);
     editorLayers.splice(activeIndex + 1, 0, layer);
     setActiveLayer(layer.id);
@@ -659,6 +743,7 @@ function mergeVisibleLayers() {
         name: `Layer ${layerSeq - 1}`,
         fg: mergedData.fg,
         bg: mergedData.bg,
+        water: mergedData.water,
         visible: true,
         locked: false
     };
@@ -670,14 +755,12 @@ function mergeVisibleLayers() {
     setActiveLayer(mergedLayer.id, { sync: false });
 }
 
-function copyActiveLayer() {
-    syncActiveLayerRefs();
-    const source = activeLayer();
-    if (!source) return;
-    layerClipboard = {
+function cloneLayerForClipboard(source) {
+    return {
         name: source.name,
         fg: cloneGrid(source.fg),
         bg: cloneGrid(source.bg),
+        water: cloneGrid(source.water || makeGrid()),
         visible: source.visible,
         locked: false,
         arrangeRegion: cloneArrangeRegion(source.arrangeRegion),
@@ -685,28 +768,200 @@ function copyActiveLayer() {
     };
 }
 
+function getLayerCopySources(preferredLayerId = null) {
+    const arrangeSelectionIds = getArrangePanelSelectionIds?.() || arrangePanelSelectionIds;
+    const selectedLayers = editorLayers.filter(layer => arrangeSelectionIds.has(layer.id));
+    if (selectedLayers.length > 1) return selectedLayers;
+    const preferredLayer = editorLayers.find(layer => layer.id === preferredLayerId);
+    return preferredLayer ? [preferredLayer] : (activeLayer() ? [activeLayer()] : []);
+}
+
+function getLayerActionTargets(preferredLayerId = null) {
+    return getLayerCopySources(preferredLayerId);
+}
+
+function setActiveLayerAfterLayerListChange(preferredIndex = 0) {
+    const nextLayer = editorLayers[Math.min(preferredIndex, editorLayers.length - 1)] || editorLayers[editorLayers.length - 1] || null;
+    if (nextLayer) {
+        arrangePanelSelectionIds.clear();
+        activeLayerId = nextLayer.id;
+        selectedLayerId = nextLayer.id;
+        layerDeleteTargetId = nextLayer.id;
+        fgData = nextLayer.fg;
+        bgData = nextLayer.bg;
+        waterData = nextLayer.water || makeGrid();
+        nextLayer.water = waterData;
+    } else {
+        activeLayerId = null;
+        selectedLayerId = null;
+        layerDeleteTargetId = null;
+        fgData = makeGrid();
+        bgData = makeGrid();
+        waterData = makeGrid();
+    }
+}
+
+function copyActiveLayer(preferredLayerId = null) {
+    syncActiveLayerRefs();
+    const sources = getLayerCopySources(preferredLayerId);
+    if (!sources.length) return;
+    layerClipboard = {
+        layers: sources.map(cloneLayerForClipboard)
+    };
+}
+
 function pasteLayer() {
     if (!layerClipboard) return;
+    const clipboardLayers = Array.isArray(layerClipboard.layers) ? layerClipboard.layers : [layerClipboard];
+    if (!clipboardLayers.length) return;
     saveHistory('Paste Layer');
     syncActiveLayerRefs();
-    const layer = {
+    const pastedLayers = clipboardLayers.map(clip => ({
         id: layerSeq++,
-        name: `${layerClipboard.name || 'Layer'} copy`,
-        fg: cloneGrid(layerClipboard.fg),
-        bg: cloneGrid(layerClipboard.bg),
-        visible: layerClipboard.visible !== false,
+        name: `${clip.name || 'Layer'} copy`,
+        fg: cloneGrid(clip.fg),
+        bg: cloneGrid(clip.bg),
+        water: cloneGrid(clip.water || makeGrid()),
+        visible: clip.visible !== false,
         locked: false,
-        arrangeRegion: cloneArrangeRegion(layerClipboard.arrangeRegion),
-        resizeOriginal: cloneArrangeRegion(layerClipboard.resizeOriginal)
-    };
+        arrangeRegion: cloneArrangeRegion(clip.arrangeRegion),
+        resizeOriginal: cloneArrangeRegion(clip.resizeOriginal)
+    }));
     const activeIndex = editorLayers.findIndex(item => item.id === activeLayerId);
-    editorLayers.splice(activeIndex + 1, 0, layer);
-    activeLayerId = layer.id;
-    selectedLayerId = layer.id;
-    layerDeleteTargetId = layer.id;
-    fgData = layer.fg;
-    bgData = layer.bg;
+    editorLayers.splice(activeIndex >= 0 ? activeIndex + 1 : editorLayers.length, 0, ...pastedLayers);
+    const activePastedLayer = pastedLayers[pastedLayers.length - 1];
+    activeLayerId = activePastedLayer.id;
+    selectedLayerId = activePastedLayer.id;
+    layerDeleteTargetId = activePastedLayer.id;
+    fgData = activePastedLayer.fg;
+    bgData = activePastedLayer.bg;
+    waterData = activePastedLayer.water || makeGrid();
+    activePastedLayer.water = waterData;
+    arrangePanelSelectionIds = new Set(pastedLayers.map(layer => layer.id));
+    window.selectionActions?.selectArrangeLayers?.(pastedLayers, activePastedLayer.id);
     renderLayerPanel();
+}
+
+function setTargetLayersVisibility(preferredLayerId, visible) {
+    const targets = getLayerActionTargets(preferredLayerId);
+    if (!targets.length) return;
+    saveHistory(visible ? 'Show Layers' : 'Hide Layers');
+    targets.forEach(layer => layer.visible = visible);
+    renderLayerPanel();
+}
+
+function setTargetLayersLocked(preferredLayerId, locked) {
+    const targets = getLayerActionTargets(preferredLayerId);
+    if (!targets.length) return;
+    saveHistory(locked ? 'Lock Layers' : 'Unlock Layers');
+    targets.forEach(layer => layer.locked = locked);
+    renderLayerPanel();
+}
+
+function duplicateTargetLayers(preferredLayerId = null) {
+    syncActiveLayerRefs();
+    const sources = getLayerActionTargets(preferredLayerId);
+    if (!sources.length) return;
+    saveHistory(sources.length > 1 ? 'Duplicate Layers' : 'Duplicate Layer');
+    const insertIndex = Math.max(...sources.map(layer => editorLayers.findIndex(item => item.id === layer.id))) + 1;
+    const copies = sources.map(source => ({
+        id: layerSeq++,
+        name: `${source.name} copy`,
+        fg: cloneGrid(source.fg),
+        bg: cloneGrid(source.bg),
+        water: cloneGrid(source.water || makeGrid()),
+        visible: source.visible !== false,
+        locked: false,
+        arrangeRegion: cloneArrangeRegion(source.arrangeRegion),
+        resizeOriginal: cloneArrangeRegion(source.resizeOriginal)
+    }));
+    editorLayers.splice(insertIndex, 0, ...copies);
+    const activeCopy = copies[copies.length - 1];
+    activeLayerId = activeCopy.id;
+    selectedLayerId = activeCopy.id;
+    layerDeleteTargetId = activeCopy.id;
+    fgData = activeCopy.fg;
+    bgData = activeCopy.bg;
+    waterData = activeCopy.water || makeGrid();
+    activeCopy.water = waterData;
+    arrangePanelSelectionIds = new Set(copies.map(layer => layer.id));
+    window.selectionActions?.selectArrangeLayers?.(copies, activeCopy.id);
+    renderLayerPanel();
+}
+
+function deleteTargetLayers(preferredLayerId = null) {
+    const targets = getLayerActionTargets(preferredLayerId);
+    if (!targets.length) return;
+    const ids = new Set(targets.map(layer => layer.id));
+    const firstIndex = editorLayers.findIndex(layer => ids.has(layer.id));
+    saveHistory(targets.length > 1 ? 'Delete Layers' : 'Delete Layer');
+    window.selectionActions?.deselect();
+    editorLayers = editorLayers.filter(layer => !ids.has(layer.id));
+    setActiveLayerAfterLayerListChange(Math.max(0, firstIndex));
+    renderLayerPanel();
+}
+
+function cutTargetLayers(preferredLayerId = null) {
+    const targets = getLayerActionTargets(preferredLayerId);
+    if (!targets.length) return;
+    copyActiveLayer(preferredLayerId);
+    deleteTargetLayers(preferredLayerId);
+}
+
+function copyLayerBoundsData(layer, bounds) {
+    const fg = [], bg = [], water = [];
+    for (let dx = 0; dx < bounds.w; dx++) {
+        fg[dx] = [];
+        bg[dx] = [];
+        water[dx] = [];
+        for (let dy = 0; dy < bounds.h; dy++) {
+            const x = bounds.x + dx;
+            const y = bounds.y + dy;
+            fg[dx][dy] = layer.fg[x][y] ? JSON.parse(JSON.stringify(layer.fg[x][y])) : null;
+            bg[dx][dy] = layer.bg[x][y] ? JSON.parse(JSON.stringify(layer.bg[x][y])) : null;
+            water[dx][dy] = layer.water?.[x]?.[y] ? JSON.parse(JSON.stringify(layer.water[x][y])) : null;
+        }
+    }
+    return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h, fg, bg, water };
+}
+
+function invertTargetLayerImage(preferredLayerId = null) {
+    const targets = getLayerActionTargets(preferredLayerId);
+    if (!targets.length) return;
+    saveHistory('Flip Image');
+    for (const layer of targets) {
+        const bounds = getLayerContentBounds(layer);
+        if (!bounds) continue;
+        const nextFg = cloneGrid(layer.fg);
+        const nextBg = cloneGrid(layer.bg);
+        const nextWater = cloneGrid(layer.water || makeGrid());
+        for (let dx = 0; dx < bounds.w; dx++) {
+            for (let dy = 0; dy < bounds.h; dy++) {
+                const fromX = bounds.x + dx;
+                const toX = bounds.x + bounds.w - 1 - dx;
+                const y = bounds.y + dy;
+                nextFg[toX][y] = layer.fg[fromX][y] ? JSON.parse(JSON.stringify(layer.fg[fromX][y])) : null;
+                nextBg[toX][y] = layer.bg[fromX][y] ? JSON.parse(JSON.stringify(layer.bg[fromX][y])) : null;
+                nextWater[toX][y] = layer.water?.[fromX]?.[y] ? JSON.parse(JSON.stringify(layer.water[fromX][y])) : null;
+            }
+        }
+        layer.fg = nextFg;
+        layer.bg = nextBg;
+        layer.water = nextWater;
+        if (layer.arrangeRegion) {
+            layer.arrangeRegion = copyLayerBoundsData(layer, bounds);
+        }
+        if (layer.resizeOriginal) {
+            layer.resizeOriginal = cloneArrangeRegion(layer.arrangeRegion);
+        }
+        if (layer.id === activeLayerId) {
+            fgData = layer.fg;
+            bgData = layer.bg;
+            waterData = layer.water;
+        }
+    }
+    renderLayerPanel();
+    refreshArrangeSelectionBoundsFromPanel?.();
 }
 
 function setArrangeTool() {
@@ -963,30 +1218,23 @@ function placeBlockAt(x, y, block) {
 
     // Wall/background blocks go to the background layer.
     if (usesBackgroundLayer(block)) {
+        if (isWaterBlock(bgData[x][y])) waterData[x][y] = cloneBlock(bgData[x][y]);
         bgData[x][y] = cloneBlock(block);
         scheduleHistorySnapshot('Place Block');
         return;
     }
 
-    // Water goes into fgData like a normal block so other items can share the cell.
-    // If something is already in fg, only replace it if the existing item is also water
-    // (water stacks with itself), otherwise keep the fg item and just place water there too
-    // by storing it -the render pass will draw water below non-water fg items.
+    // Water uses its own top layer so backgrounds and props can sit below it.
     if (isWaterBlock(block)) {
-        // Migrate any old bgData water out (shouldn't exist in new saves, but handle legacy).
-        if (isWaterBlock(bgData[x][y])) {
-            bgData[x][y] = null;
-        }
-        fgData[x][y] = cloneBlock(block);
+        if (isWaterBlock(fgData[x][y])) fgData[x][y] = null;
+        if (isWaterBlock(bgData[x][y])) bgData[x][y] = null;
+        waterData[x][y] = cloneBlock(block);
         scheduleHistorySnapshot('Place Block');
         return;
     }
 
-    // Placing a non-water fg block: keep water in this cell by moving it to a dedicated
-    // water sub-layer stored in bgData only when the bg slot is empty.
     if (isWaterBlock(fgData[x][y])) {
-        // Preserve water in bgData so it still renders behind this new block.
-        if (!bgData[x][y]) bgData[x][y] = cloneBlock(fgData[x][y]);
+        waterData[x][y] = cloneBlock(fgData[x][y]);
         fgData[x][y] = null;
     }
 
@@ -1122,8 +1370,7 @@ function initUI() {
 }
 
 function putBlockInHotbar(block) {
-    let targetSlot = hotbar.findIndex((slot, idx) => idx > 0 && slot === null);
-    if (targetSlot === -1) targetSlot = activeSlot === 0 ? 1 : activeSlot;
+    let targetSlot = getNextHotbarSlot();
     hotbar[targetSlot] = block;
     const slot = document.querySelector(`.slot[data-slot="${targetSlot}"]`);
     if (slot) slot.innerHTML = `<img src="${block.texture}">`;
@@ -1218,8 +1465,7 @@ function updateToolState(tool) {
 
 function selectSlot(i) {
     activeSlot = i;
-    if (i === 0) updateToolState('move');
-    else updateToolState('hotbar');
+    updateToolState('hotbar');
     document.querySelectorAll('.slot').forEach(s => s.classList.toggle('active', Number(s.dataset.slot) === i));
 }
 
@@ -1266,10 +1512,10 @@ function updateSideToolbarVisibility() {
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('click', (e) => {
-    if (!e.target.closest('#layer-context-menu')) hideLayerContextMenu();
+    if (!e.target.closest('#layer-context-menu') && !e.target.closest('#arrange-context-menu')) hideLayerContextMenu();
 });
 document.addEventListener('mousedown', (e) => {
-    if (!e.target.closest('#layer-list') && !e.target.closest('#layer-context-menu')) {
+    if (!e.target.closest('#layer-list') && !e.target.closest('#layer-context-menu') && !e.target.closest('#arrange-context-menu')) {
         layerPanelHasFocus = false;
     }
 }, true);
@@ -1399,6 +1645,11 @@ function getBlockCounts() {
                 const key = bgData[x][y].name;
                 bgCounts[key] = (bgCounts[key] || { block: bgData[x][y], count: 0 });
                 bgCounts[key].count++;
+            }
+            if (waterData[x][y]) {
+                const key = waterData[x][y].name;
+                fgCounts[key] = (fgCounts[key] || { block: waterData[x][y], count: 0 });
+                fgCounts[key].count++;
             }
         }
     }
@@ -1573,6 +1824,7 @@ document.getElementById('confirm-replace').onclick = () => {
             if (isProtectedTile(x, y)) continue;
             if(fgData[x][y] && fgData[x][y].name === targetBlockForReplace.name) fgData[x][y] = JSON.parse(JSON.stringify(newBlock));
             if(bgData[x][y] && bgData[x][y].name === targetBlockForReplace.name) bgData[x][y] = JSON.parse(JSON.stringify(newBlock));
+            if(waterData[x][y] && waterData[x][y].name === targetBlockForReplace.name) waterData[x][y] = JSON.parse(JSON.stringify(newBlock));
         }
     }
     closeAll();
@@ -1599,7 +1851,7 @@ const gridToggleBtn = document.getElementById('grid-toggle');
 if (gridToggleBtn) gridToggleBtn.onclick = () => showGrid = !showGrid;
 
 function setMoveToolFromKeybind() {
-    selectSlot(0);
+    updateToolState('move');
 }
 
 function executeKeybindCommand(command) {
@@ -1692,6 +1944,7 @@ function captureKeybindSetting(e) {
     } else {
         const keybind = eventToKeybind(e);
         if (!keybind) return;
+        if (isReservedHotbarKeybind(keybind)) return;
         Object.keys(appSettings.keybinds).forEach(command => {
             if (command !== keybindListeningFor && appSettings.keybinds[command] === keybind) {
                 appSettings.keybinds[command] = '';
@@ -1722,7 +1975,7 @@ document.getElementById('top-redo-btn')?.addEventListener('click', redo);
 document.getElementById('top-new-layer-btn')?.addEventListener('click', addLayer);
 document.getElementById('side-inv-search')?.addEventListener('input', applySideInvFilter);
 document.getElementById('arrange-btn')?.addEventListener('click', setArrangeTool);
-document.getElementById('move-btn')?.addEventListener('click', () => selectSlot(0));
+document.getElementById('move-btn')?.addEventListener('click', () => updateToolState('move'));
 document.querySelectorAll('.side-inv-filter').forEach(btn => {
     btn.onclick = () => {
         sideInvFilterFolder = btn.dataset.filter;
@@ -1731,7 +1984,7 @@ document.querySelectorAll('.side-inv-filter').forEach(btn => {
         applySideInvFilter();
     };
 });
-document.getElementById('layer-context-menu')?.addEventListener('click', (e) => {
+document.getElementById('layer-context-menu')?.addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-layer-action]');
     if (!btn) return;
     const layerId = Number(e.currentTarget.dataset.layerId);
@@ -1751,12 +2004,31 @@ document.getElementById('layer-context-menu')?.addEventListener('click', (e) => 
         renderLayerPanel();
     }
     if (action === 'merge-visible') mergeVisibleLayers();
-    if (action === 'copy-layer') copyActiveLayer();
+    if (action === 'copy-layer') copyActiveLayer(layerId);
     if (action === 'paste-layer') pasteLayer();
     if (action === 'duplicate') duplicateLayer();
     if (action === 'move-up') moveActiveLayer(1);
     if (action === 'move-down') moveActiveLayer(-1);
     if (action === 'delete') deleteLayer(layerId);
+    hideLayerContextMenu();
+});
+
+document.getElementById('arrange-context-menu')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-arrange-action]');
+    if (!btn) return;
+    const layerId = Number(e.currentTarget.dataset.layerId);
+    if (!layerId) return;
+    if (layerExists(layerId)) setActiveLayer(layerId);
+    const targets = getLayerActionTargets(layerId);
+    const action = btn.dataset.arrangeAction;
+    if (action === 'toggle-visible') setTargetLayersVisibility(layerId, !targets.some(layer => layer.visible !== false));
+    if (action === 'toggle-lock') setTargetLayersLocked(layerId, targets.some(layer => !layer.locked));
+    if (action === 'cut-layer') cutTargetLayers(layerId);
+    if (action === 'copy-layer') copyActiveLayer(layerId);
+    if (action === 'paste-layer') pasteLayer();
+    if (action === 'duplicate') duplicateTargetLayers(layerId);
+    if (action === 'invert-image') await invertTargetLayerImage(layerId);
+    if (action === 'delete') deleteTargetLayers(layerId);
     hideLayerContextMenu();
 });
 
@@ -1886,13 +2158,17 @@ document.getElementById('file-input').onchange = (e) => {
     reader.onload = () => {
         const d = JSON.parse(reader.result);
         restoreEditorState(d);
-        // --- Legacy migration: old saves stored water in bgData as a background block.
-        //    Move those water blocks to fgData so they behave correctly in the new system.
+        // --- Legacy migration: old saves stored water in bgData or fgData.
+        //    Move those water blocks to the dedicated water layer.
         for (let x = 0; x < GRID_X; x++) {
             for (let y = 0; y < GRID_Y; y++) {
-                if (isWaterBlock(bgData[x][y]) && !fgData[x][y]) {
-                    fgData[x][y] = bgData[x][y];
+                if (isWaterBlock(bgData[x][y])) {
+                    waterData[x][y] = bgData[x][y];
                     bgData[x][y] = null;
+                }
+                if (isWaterBlock(fgData[x][y])) {
+                    waterData[x][y] = fgData[x][y];
+                    fgData[x][y] = null;
                 }
             }
         }
@@ -1917,8 +2193,7 @@ viewport.onmousedown = (e) => {
         const visibleData = composeVisibleLayers();
         const picked = visibleData.fg[x][y] || visibleData.bg[x][y];
         if (picked) {
-            let targetSlot = hotbar.findIndex((slot, idx) => idx > 0 && slot === null);
-            if (targetSlot === -1) targetSlot = activeSlot === 0 ? 1 : activeSlot;
+            let targetSlot = getNextHotbarSlot();
 
             hotbar[targetSlot] = JSON.parse(JSON.stringify(picked));
             const slotEl = document.querySelector(`.slot[data-slot="${targetSlot}"]`);
@@ -1998,7 +2273,7 @@ function handlePlace(e) {
 
     if (e.buttons === 1) {
         const b = hotbar[activeSlot];
-        if (!b || activeSlot === 0) return;
+        if (!b) return;
         placeBlockAt(x, y, b);
     }
     else if (e.buttons === 2) {
@@ -2007,6 +2282,7 @@ function handlePlace(e) {
         clearActiveArrangeRegion();
         fgData[x][y] = null;
         bgData[x][y] = null;
+        waterData[x][y] = null;
         scheduleHistorySnapshot('Erase');
     }
 }
@@ -2014,7 +2290,7 @@ function handlePlace(e) {
 function floodFill(x, y, block) {
     if (block) ensureActiveLayer();
     clearActiveArrangeRegion();
-    const layer = (block && usesBackgroundLayer(block)) ? bgData : fgData;
+    const layer = (block && isWaterBlock(block)) ? waterData : ((block && usesBackgroundLayer(block)) ? bgData : fgData);
     const target = layer[x][y]?.name || null;
     if(block && target === block.name) return;
     const stack = [[x, y]];
@@ -2056,14 +2332,49 @@ function drawShape(x1, y1, x2, y2) {
 }
 
 const SHADOW_OFFSET = 8;  // px offset to bottom-right
+const PROP_SHADOW_OFFSET_X = 4;  // props sit closer horizontally
+const PROP_SHADOW_OFFSET_Y = 6;  // and a little lower vertically
 const SHADOW_ALPHA  = 0.35; // translucency of shadow
+
+function isDisplayCaseBlock(block) {
+    const label = `${block?.name || ''} ${block?.fileName || ''}`.toLowerCase();
+    return label.includes('display case');
+}
+
+function shouldCastShadow(block) {
+    return !!block && !isWaterBlock(block) && !isDisplayCaseBlock(block);
+}
+
+function hasWaterAt(x, y) {
+    if (x < 0 || x >= GRID_X || y < 0 || y >= GRID_Y) return false;
+    return !!(waterData[x][y] || isWaterBlock(fgData[x][y]) || isWaterBlock(bgData[x][y]));
+}
+
+function getShadowSilhouette(tex) {
+    if (!tex || !tex.complete || tex.naturalWidth === 0) return null;
+    const cacheKey = tex.src;
+    let oc = silhouetteCache[cacheKey];
+    if (oc) return oc;
+    oc = document.createElement('canvas');
+    oc.width = TILE;
+    oc.height = TILE;
+    const oc2 = oc.getContext('2d');
+    oc2.drawImage(tex, 0, 0, TILE, TILE);
+    oc2.globalCompositeOperation = 'source-in';
+    oc2.fillStyle = 'black';
+    oc2.fillRect(0, 0, TILE, TILE);
+    silhouetteCache[cacheKey] = oc;
+    return oc;
+}
 
 function render(time) {
     const editingFgData = fgData;
     const editingBgData = bgData;
+    const editingWaterData = waterData;
     const compositeData = composeVisibleLayers();
     fgData = compositeData.fg;
     bgData = compositeData.bg;
+    waterData = compositeData.water;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const glowAlpha = (Math.sin(time * 0.002) + 1) / 2;
@@ -2079,7 +2390,16 @@ function render(time) {
         }
     }
 
-    // --- Pass 1b: draw props AND platforms BEFORE water so they appear behind water ---
+    // --- Pass 1b: draw prop shadows before props so each shadow sits behind its object ---
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const block = fgData[x][y];
+            if (!block || block.type !== 'prop') continue;
+            drawBlockShadow(x, y, block);
+        }
+    }
+
+    // --- Pass 1c: draw props AND platforms BEFORE water so they appear behind water ---
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = fgData[x][y];
@@ -2088,134 +2408,59 @@ function render(time) {
         }
     }
 
-    // --- Pass 1c: water stored in bgData (pushed here when a non-water fg block shares the cell) ---
+    // --- Pass 1d: water overlay above background and props ---
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
-            const block = bgData[x][y];
-            if (!block || !isWaterBlock(block)) continue;
+            const block = waterData[x][y] || (isWaterBlock(fgData[x][y]) ? fgData[x][y] : null) || (isWaterBlock(bgData[x][y]) ? bgData[x][y] : null);
+            if (!block) continue;
             const baseTex = getBlockTexture(x, y, block);
             if (!baseTex) continue;
             ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
         }
     }
 
-    // --- Pass 1d: water blocks in fgData (no other fg block at this cell) ---
+    // --- Pass 2: draw foreground shadows as black translucent texture duplicates ---
     for (let x = 0; x < GRID_X; x++) {
         for (let y = 0; y < GRID_Y; y++) {
             const block = fgData[x][y];
-            if (!block || !isWaterBlock(block)) continue;
-            const baseTex = getBlockTexture(x, y, block);
-            if (!baseTex) continue;
-            ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
+            if (!block || block.type === 'prop') continue;
+            drawBlockShadow(x, y, block);
         }
     }
 
-    // --- Pass 2: draw fg block shadows -only on top of non-water bg cells ---
-    // -Solid square shadow  ->for 'block' type (opaque square tiles)
-    // -Image-shaped shadow  ->for 'block' type non-square variants
-    // -Props are drawn BEHIND water so they do NOT cast shadows.
-    //   Platforms cast shadows as normal since they render in front of water.
-    ctx.save();
-    for (let x = 0; x < GRID_X; x++) {
-        for (let y = 0; y < GRID_Y; y++) {
-            const fgBlock = fgData[x][y];
-            if (!fgBlock) continue; // no fg block here, no shadow
-            // Props are behind water -skip their shadows entirely
-            if (fgBlock.type === 'prop') continue;
-
-            const px = x * TILE + SHADOW_OFFSET;
-            const py = y * TILE + SHADOW_OFFSET;
-
-            // Gather bg cells that the shadow rectangle overlaps
-            const x0 = x, x1 = x + 1;
-            const y0 = y, y1 = y + 1;
-
-            // --- Square shadow (block type) ---
-            if (fgBlock.type === 'block') {
-                ctx.fillStyle = 'rgba(0,0,0,' + SHADOW_ALPHA + ')';
-                for (let bx = x0; bx <= x1; bx++) {
-                    for (let by = y0; by <= y1; by++) {
-                        if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
-                        if (!bgData[bx][by]) continue;
-                        if (isWaterBlock(bgData[bx][by])) continue; // no shadow on water
-
-                        const tileLeft   = bx * TILE;
-                        const tileTop    = by * TILE;
-                        const tileRight  = tileLeft + TILE;
-                        const tileBottom = tileTop  + TILE;
-
-                        const clipX = Math.max(px, tileLeft);
-                        const clipY = Math.max(py, tileTop);
-                        const clipW = Math.min(px + TILE, tileRight)  - clipX;
-                        const clipH = Math.min(py + TILE, tileBottom) - clipY;
-
-                        if (clipW > 0 && clipH > 0) {
-                            ctx.fillRect(clipX, clipY, clipW, clipH);
-                        }
-                    }
-                }
-            } else {
-                // --- Image-shaped shadow (prop, water, etc.) ---
-                const tex = getBlockTexture(x, y, fgBlock);
-                if (!tex || !tex.complete || tex.naturalWidth === 0) continue;
-
-                // Check that at least one non-water bg cell exists under the shadow
-                let hasBg = false;
-                for (let bx = x0; bx <= x1 && !hasBg; bx++) {
-                    for (let by = y0; by <= y1 && !hasBg; by++) {
-                        if (bx >= 0 && bx < GRID_X && by >= 0 && by < GRID_Y && bgData[bx][by] && !isWaterBlock(bgData[bx][by])) hasBg = true;
-                    }
-                }
-                if (!hasBg) continue;
-
-                // Build a black silhouette of the texture using an offscreen canvas (cached)
-                const cacheKey = tex.src;
-                let oc = silhouetteCache[cacheKey];
-                if (!oc) {
-                    oc = document.createElement('canvas');
-                    oc.width  = TILE;
-                    oc.height = TILE;
-                    const oc2 = oc.getContext('2d');
-                    oc2.drawImage(tex, 0, 0, TILE, TILE);
-                    oc2.globalCompositeOperation = 'source-in';
-                    oc2.fillStyle = 'black';
-                    oc2.fillRect(0, 0, TILE, TILE);
-                    silhouetteCache[cacheKey] = oc;
-                }
-
-                // Draw the silhouette at the shadow offset, clipped to non-water bg tiles
-                for (let bx = x0; bx <= x1; bx++) {
-                    for (let by = y0; by <= y1; by++) {
-                        if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
-                        if (!bgData[bx][by]) continue;
-                        if (isWaterBlock(bgData[bx][by])) continue; // no shadow on water
-
-                        const tileLeft   = bx * TILE;
-                        const tileTop    = by * TILE;
-                        const tileRight  = tileLeft + TILE;
-                        const tileBottom = tileTop  + TILE;
-
-                        const clipX = Math.max(px, tileLeft);
-                        const clipY = Math.max(py, tileTop);
-                        const clipW = Math.min(px + TILE, tileRight)  - clipX;
-                        const clipH = Math.min(py + TILE, tileBottom) - clipY;
-
-                        if (clipW > 0 && clipH > 0) {
-                            ctx.save();
-                            ctx.globalAlpha = SHADOW_ALPHA;
-                            // Clip to just the overlapping region so shadow doesn't bleed
-                            ctx.beginPath();
-                            ctx.rect(clipX, clipY, clipW, clipH);
-                            ctx.clip();
-                            ctx.drawImage(oc, px, py, TILE, TILE);
-                            ctx.restore();
-                        }
-                    }
-                }
+    function drawBlockShadow(x, y, block) {
+        if (!shouldCastShadow(block)) return;
+        if (hasWaterAt(x, y)) return;
+        const tex = getBlockTexture(x, y, block);
+        const silhouette = getShadowSilhouette(tex);
+        if (!silhouette) return;
+        const offsetX = block.type === 'prop' ? PROP_SHADOW_OFFSET_X : SHADOW_OFFSET;
+        const offsetY = block.type === 'prop' ? PROP_SHADOW_OFFSET_Y : SHADOW_OFFSET;
+        const px = x * TILE + offsetX;
+        const py = y * TILE + offsetY;
+        const minBx = Math.floor(px / TILE);
+        const maxBx = Math.floor((px + TILE - 1) / TILE);
+        const minBy = Math.floor(py / TILE);
+        const maxBy = Math.floor((py + TILE - 1) / TILE);
+        for (let bx = minBx; bx <= maxBx; bx++) {
+            for (let by = minBy; by <= maxBy; by++) {
+                if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
+                if (!bgData[bx][by] || isWaterBlock(bgData[bx][by]) || hasWaterAt(bx, by)) continue;
+                const clipX = Math.max(px, bx * TILE);
+                const clipY = Math.max(py, by * TILE);
+                const clipW = Math.min(px + TILE, bx * TILE + TILE) - clipX;
+                const clipH = Math.min(py + TILE, by * TILE + TILE) - clipY;
+                if (clipW <= 0 || clipH <= 0) continue;
+                ctx.save();
+                ctx.globalAlpha = SHADOW_ALPHA;
+                ctx.beginPath();
+                ctx.rect(clipX, clipY, clipW, clipH);
+                ctx.clip();
+                ctx.drawImage(silhouette, px, py, TILE, TILE);
+                ctx.restore();
             }
         }
     }
-    ctx.restore();
 
     // Helper: draw a single fg block and its optional glow layer.
     function drawFgBlock(x, y, block) {
@@ -2270,6 +2515,7 @@ function render(time) {
 
     fgData = editingFgData;
     bgData = editingBgData;
+    waterData = editingWaterData;
     requestAnimationFrame(render);
 }
 
@@ -2298,13 +2544,12 @@ window.onkeydown = (e) => {
         return;
     }
 
-    const key = e.key.toLowerCase();
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key >= '0' && e.key <= '9') {
+        selectSlot(parseInt(e.key));
+        return;
+    }
 
     if (handleSettingsKeybind(e)) return;
-
-    if (e.key >= '1' && e.key <= '9') {
-        selectSlot(parseInt(e.key));
-    }
 };
 
 function exportScreenshot() {
@@ -2316,17 +2561,24 @@ function exportScreenshot() {
     const drawBlocks = () => {
         const editingFgData = fgData;
         const editingBgData = bgData;
+        const editingWaterData = waterData;
         const compositeData = composeVisibleLayers();
         fgData = compositeData.fg;
         bgData = compositeData.bg;
+        waterData = compositeData.water;
         for (let x = 0; x < GRID_X; x++) {
             for (let y = 0; y < GRID_Y; y++) {
-                if (bgData[x][y]) {
+                if (bgData[x][y] && !isWaterBlock(bgData[x][y])) {
                     const tex = getBlockTexture(x, y, bgData[x][y]);
                     if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
                 }
-                if (fgData[x][y]) {
+                if (fgData[x][y] && !isWaterBlock(fgData[x][y])) {
                     const tex = getBlockTexture(x, y, fgData[x][y]);
+                    if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
+                }
+                const water = waterData[x][y] || (isWaterBlock(fgData[x][y]) ? fgData[x][y] : null) || (isWaterBlock(bgData[x][y]) ? bgData[x][y] : null);
+                if (water) {
+                    const tex = getBlockTexture(x, y, water);
                     if (tex) tempCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
                 }
             }
@@ -2346,6 +2598,7 @@ function exportScreenshot() {
         }
         fgData = editingFgData;
         bgData = editingBgData;
+        waterData = editingWaterData;
         const link = document.createElement('a');
         link.download = `PW_World_Export_${Date.now()}.png`;
         link.href = tempCanvas.toDataURL("image/png");
@@ -3427,7 +3680,6 @@ render();
     }
 
     function setLassoTool() {
-        activeSlot = 0;
         document.querySelectorAll('.slot').forEach(s => s.classList.remove('active'));
         updateToolState('lasso');
         activeTool = 'lasso';
@@ -3598,6 +3850,7 @@ render();
         selectTool: setSelectTool,
         selectLayerContents,
         selectArrangeLayer,
+        selectArrangeLayers: setArrangeLayerSelection,
         toggleArrangeLayerSelection
     };
     selectArrangeLayerFromPanel = selectArrangeLayer;
@@ -3612,7 +3865,7 @@ render();
     const selectBtn = document.getElementById('select-btn');
     if (selectBtn) {
         selectBtn.onclick = () => {
-            if (activeTool === 'select') { deselect(); selectSlot(0); }
+            if (activeTool === 'select') { deselect(); updateToolState('move'); }
             else setSelectTool();
         };
     }
@@ -3623,6 +3876,16 @@ render();
     // hook in at the right points.
 
     const origMousedown = viewport.onmousedown;
+    viewport.addEventListener('contextmenu', (e) => {
+        if (activeTool !== 'arrange' || !sel) return;
+        const t = toTile(e.clientX, e.clientY);
+        if (!insideSel(t.x, t.y)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const targetLayerId = arrangeSelectedLayerIds.has(activeLayerId) ? activeLayerId : [...arrangeSelectedLayerIds][0];
+        if (targetLayerId) showArrangeContextMenu(e.clientX, e.clientY, targetLayerId);
+    });
+
     viewport.onmousedown = function(e) {
         if (activeTool !== 'select' && activeTool !== 'lasso' && activeTool !== 'arrange') { origMousedown && origMousedown.call(this, e); return; }
         if (e.button !== 0) return;
@@ -4008,6 +4271,13 @@ render();
 
         if (activeTool === 'select' || activeTool === 'lasso' || activeTool === 'arrange') {
             if (e.key === 'Escape') { e.preventDefault(); deselect(); return; }
+            if (activeTool === 'arrange' && (e.ctrlKey || e.metaKey)) {
+                const key = e.key.toLowerCase();
+                if (key === 'x') { e.preventDefault(); cutTargetLayers(activeLayerId); return; }
+                if (key === 'c') { e.preventDefault(); copyActiveLayer(activeLayerId); return; }
+                if (key === 'v') { e.preventDefault(); pasteLayer(); return; }
+                if (key === 'd') { e.preventDefault(); duplicateTargetLayers(activeLayerId); return; }
+            }
 
             if ((activeTool === 'select' || activeTool === 'lasso') && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && sel) {
                 e.preventDefault();
