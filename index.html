@@ -240,6 +240,13 @@
         <div class="popup-header"><h3>Image ->Blocks</h3><button class="close-btn-fancy">x</button></div>
         <div style="font-size:13px;color:#aaa;margin-bottom:10px;">Convert an image into pixel blocks automatically.</div>
         <button id="img2blocks-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">Upload Image</button>
+        <div class="recent-image-row" style="display:grid;grid-template-columns:44px minmax(0,1fr) 64px;gap:6px;margin-bottom:10px;align-items:center;max-width:100%;overflow:hidden;">
+            <div id="img2blocks-recent-thumb" style="width:44px;height:38px;background:#111;border:1px solid #444;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#555;font-size:10px;">No</div>
+            <select id="img2blocks-recent-select" style="min-width:0;width:100%;background:#222;color:#fff;border:1px solid #444;padding:5px;border-radius:4px;font-size:12px;text-overflow:ellipsis;">
+                <option value="">No recent images</option>
+            </select>
+            <button id="img2blocks-recent-use-btn" class="fancy-btn" style="width:64px;font-size:12px;padding:5px;">Use</button>
+        </div>
         <div id="img2blocks-controls" class="hidden">
             <div style="margin-bottom:10px;">
                 <label style="font-size:12px;color:#aaa;">Placement X (tile)</label>
@@ -257,18 +264,44 @@
                 <label style="font-size:12px;color:#aaa;">Height (tiles)</label>
                 <input type="number" id="i2b-h" value="15" min="1" max="60" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
             </div>
-            <div style="margin-bottom:10px;">
-                <label style="font-size:12px;color:#aaa;">Art Mode / Block Variety</label>
-                <input type="range" id="i2b-variety" min="1" max="4" value="1" step="1" style="width:100%">
-                <div id="i2b-variety-label" style="font-size:11px;color:#3abdc2;margin-top:2px;">Pixel blocks only -clean pixel art mode</div>
-                <div style="font-size:10px;color:#666;margin-top:3px;">Modes 2- use dual FG+BG layers with 3-tier depth shading</div>
+            <input type="hidden" id="i2b-variety" value="1">
+            <div class="i2b-section-tabs" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">
+                <button id="i2b-section-pixel" class="fancy-btn highlight i2b-section-btn" type="button" style="margin-top:0;">Pixel Art</button>
+                <button id="i2b-section-world" class="fancy-btn i2b-section-btn" type="button" style="margin-top:0;">World Asset</button>
+            </div>
+            <div id="i2b-section-label" style="font-size:11px;color:#3abdc2;margin:-4px 0 10px;">Pixel Art</div>
+            <div class="i2b-pixel-controls" style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Pixel Art Depth Layering</label>
+                <select id="i2b-pixel-depth-mode" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+                    <option value="blocks-base">Blocks as base, backgrounds add depth</option>
+                    <option value="combination">Combination - strong blocks/background mix</option>
+                    <option value="background-base">Backgrounds as base, blocks add depth</option>
+                </select>
+            </div>
+            <div class="i2b-pixel-controls" style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="i2b-outline-mode" style="width:16px;height:16px;cursor:pointer;">
+                    <span>Outline mode</span>
+                </label>
+            </div>
+            <div class="i2b-world-controls hidden" style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Asset Depth</label>
+                <select id="i2b-world-depth" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;">
+                    <option value="balanced">Balanced</option>
+                    <option value="heavy">Heavy</option>
+                    <option value="light">Light</option>
+                </select>
+            </div>
+            <div class="i2b-world-controls hidden" style="margin-bottom:10px;">
+                <label style="font-size:12px;color:#aaa;">Detail Density</label>
+                <input type="range" id="i2b-world-detail" min="1" max="3" value="2" step="1" style="width:100%">
             </div>
             <div style="margin-bottom:10px;">
                 <label style="font-size:12px;color:#aaa;display:flex;align-items:center;gap:8px;cursor:pointer;">
                     <input type="checkbox" id="i2b-flip" style="width:16px;height:16px;cursor:pointer;">
                     <span>Rotate 90deg (for tall/portrait images)</span>
                 </label>
-                <div style="font-size:11px;color:#666;margin-top:3px;padding-left:24px;">Lays the image sideways -swap W/H for best fit</div>
+                <div style="font-size:11px;color:#666;margin-top:3px;padding-left:24px;">Auto-sizes to the rotated footprint.</div>
             </div>
             <div id="i2b-preview" style="margin:10px 0;text-align:center;"></div>
             <button id="img2blocks-convert-btn" class="fancy-btn highlight" style="width:100%;margin-bottom:6px;">Convert to Blocks</button>
@@ -289,31 +322,18 @@
             <!-- Replicate Mode -->
             <div id="i2w-panel-replicate">
                 <div style="font-size:12px;color:#86efac;margin-bottom:10px;background:#0a1f0f;border:1px solid #166534;border-radius:6px;padding:8px 10px;line-height:1.5;">
-                    Upload a screenshot of a Pixel Worlds world. Each tile is compared pixel-by-pixel against every known block texture using a visual fingerprint. Exact or near-exact matches are placed 1:1. Tiles with no recognisable block are skipped.
+                    Upload a full Pixel Worlds screenshot. Replicate fills the whole 80x60 world and separates background, water, and transparent props/details.
                 </div>
                 <button id="i2w-replicate-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">Upload Screenshot</button>
+                <div class="recent-image-row" style="display:grid;grid-template-columns:44px minmax(0,1fr) 64px;gap:6px;margin-bottom:10px;align-items:center;max-width:100%;overflow:hidden;">
+                    <div id="i2w-rep-recent-thumb" style="width:44px;height:38px;background:#111;border:1px solid #444;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#555;font-size:10px;">No</div>
+                    <select id="i2w-rep-recent-select" style="min-width:0;width:100%;background:#222;color:#fff;border:1px solid #444;padding:5px;border-radius:4px;font-size:12px;text-overflow:ellipsis;">
+                        <option value="">No recent images</option>
+                    </select>
+                    <button id="i2w-rep-recent-use-btn" class="fancy-btn" style="width:64px;font-size:12px;padding:5px;">Use</button>
+                </div>
                 <div id="i2w-replicate-controls" class="hidden">
                     <div id="i2w-rep-preview" style="margin-bottom:10px;text-align:center;"></div>
-                    <div style="display:flex;gap:8px;margin-bottom:8px;">
-                        <div style="flex:1;"><label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Start X</label>
-                            <input type="number" id="i2w-rep-x" value="0" min="0" max="79" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;font-size:12px;"></div>
-                        <div style="flex:1;"><label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Start Y</label>
-                            <input type="number" id="i2w-rep-y" value="0" min="0" max="59" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;font-size:12px;"></div>
-                        <div style="flex:1;"><label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Width</label>
-                            <input type="number" id="i2w-rep-w" value="40" min="1" max="80" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;font-size:12px;"></div>
-                        <div style="flex:1;"><label style="font-size:11px;color:#aaa;display:block;margin-bottom:3px;">Height</label>
-                            <input type="number" id="i2w-rep-h" value="30" min="1" max="60" style="width:100%;background:#222;color:#fff;border:1px solid #444;padding:4px;border-radius:4px;font-size:12px;"></div>
-                    </div>
-                    <div style="margin-bottom:10px;">
-                        <label style="font-size:11px;color:#aaa;display:block;margin-bottom:4px;">Match Strictness (visual similarity)</label>
-                        <input type="range" id="i2w-rep-tolerance" min="10" max="120" value="45" step="5" style="width:100%;">
-                        <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;"><span>Strict</span><span id="i2w-rep-tol-val" style="color:#4ade80;">45</span><span>Loose</span></div>
-                        <div style="font-size:10px;color:#555;margin-top:3px;">Strict = exact matches only. Loose = more blocks placed but may be wrong</div>
-                    </div>
-                    <div style="margin-bottom:10px;display:flex;align-items:center;gap:8px;">
-                        <input type="checkbox" id="i2w-rep-bg" checked style="accent-color:#22c55e;">
-                        <label for="i2w-rep-bg" style="font-size:12px;color:#ccc;">Match background walls too</label>
-                    </div>
                     <button id="i2w-replicate-btn" class="fancy-btn highlight" style="width:100%;background:linear-gradient(135deg,#14532d,#166534);border:1px solid #22c55e;margin-bottom:6px;">Replicate World</button>
                     <div id="i2w-rep-status" style="font-size:11px;color:#4ade80;text-align:center;min-height:18px;"></div>
                 </div>
@@ -325,6 +345,13 @@
                     Upload any image. The editor analyses its structure, depth, and colours to build a functioning world with foreground blocks, background walls, atmosphere, and terrain -not pixel art.
                 </div>
                 <button id="i2w-gen-upload-btn" class="fancy-btn" style="width:100%;margin-bottom:10px;">Upload Image</button>
+                <div class="recent-image-row" style="display:grid;grid-template-columns:44px minmax(0,1fr) 64px;gap:6px;margin-bottom:10px;align-items:center;max-width:100%;overflow:hidden;">
+                    <div id="i2w-gen-recent-thumb" style="width:44px;height:38px;background:#111;border:1px solid #444;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#555;font-size:10px;">No</div>
+                    <select id="i2w-gen-recent-select" style="min-width:0;width:100%;background:#222;color:#fff;border:1px solid #444;padding:5px;border-radius:4px;font-size:12px;text-overflow:ellipsis;">
+                        <option value="">No recent images</option>
+                    </select>
+                    <button id="i2w-gen-recent-use-btn" class="fancy-btn" style="width:64px;font-size:12px;padding:5px;">Use</button>
+                </div>
                 <div id="i2w-gen-controls" class="hidden">
                     <div id="i2w-gen-preview" style="margin-bottom:10px;text-align:center;"></div>
                     <div style="display:flex;gap:8px;margin-bottom:8px;">
@@ -391,7 +418,7 @@
     </div>
 </div>
 
-<script src="asset_list.js"></script>
-<script src="script.js?v=shadow-overlap-bg-1"></script>
+    <script src="asset_list.js?v=no-mint-assets-1"></script>
+    <script src="script.js?v=pixel-depth-old-colors-original-depth-clean-sampling-1"></script>
 </body>
 </html>
