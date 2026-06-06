@@ -4871,8 +4871,6 @@ function sampleImageToCanvas(tempImg, outW, outH, doFlip) {
     const offscreen = document.createElement('canvas');
     offscreen.width = outW; offscreen.height = outH;
     const offCtx = offscreen.getContext('2d');
-    offCtx.imageSmoothingEnabled = true;
-    offCtx.imageSmoothingQuality = 'high';
     if (doFlip) {
         offCtx.save();
         offCtx.translate(outW, 0);
@@ -4882,54 +4880,7 @@ function sampleImageToCanvas(tempImg, outW, outH, doFlip) {
     } else {
         offCtx.drawImage(tempImg, 0, 0, outW, outH);
     }
-    return cleanSampledPixels(offCtx.getImageData(0, 0, outW, outH).data, outW, outH);
-}
-
-// Remove isolated resampling speckles without changing established colour or
-// depth behavior. Pixels are replaced only when the surrounding area is highly
-// consistent and the center pixel is a clear outlier.
-function cleanSampledPixels(pixelData, width, height) {
-    const source = new Uint8ClampedArray(pixelData);
-    const cleaned = new Uint8ClampedArray(pixelData);
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-            const center = (y * width + x) * 4;
-            if (source[center + 3] < 64) continue;
-
-            let count = 0, r = 0, g = 0, b = 0;
-            for (let oy = -1; oy <= 1; oy++) {
-                for (let ox = -1; ox <= 1; ox++) {
-                    if (ox === 0 && oy === 0) continue;
-                    const ni = ((y + oy) * width + x + ox) * 4;
-                    if (source[ni + 3] < 64) continue;
-                    r += source[ni]; g += source[ni + 1]; b += source[ni + 2];
-                    count++;
-                }
-            }
-            if (count < 6) continue;
-            r /= count; g /= count; b /= count;
-
-            let variance = 0;
-            for (let oy = -1; oy <= 1; oy++) {
-                for (let ox = -1; ox <= 1; ox++) {
-                    if (ox === 0 && oy === 0) continue;
-                    const ni = ((y + oy) * width + x + ox) * 4;
-                    if (source[ni + 3] < 64) continue;
-                    const dr = source[ni] - r, dg = source[ni + 1] - g, db = source[ni + 2] - b;
-                    variance += dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-                }
-            }
-            variance /= count;
-            const dr = source[center] - r, dg = source[center + 1] - g, db = source[center + 2] - b;
-            const centerDist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
-            if (variance < 550 && centerDist > 2200) {
-                cleaned[center] = Math.round(r);
-                cleaned[center + 1] = Math.round(g);
-                cleaned[center + 2] = Math.round(b);
-            }
-        }
-    }
-    return cleaned;
+    return offCtx.getImageData(0, 0, outW, outH).data;
 }
 
 // ---
@@ -5298,7 +5249,7 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl, dep
             return isTrueGreyPixel(r, g, b);
         }
         function familyMatches(entry, family) {
-            if (family === 'neutral') return neutralPaletteMatches(entry);
+            if (family === 'neutral') return true;
             const assetName = ((entry.block && (entry.block.fileName || entry.block.name)) || '').toLowerCase();
             const entryFamily = colorFamily(entry.r, entry.g, entry.b);
             if (isGreyLeanAssetName(entry.block)) return false;
@@ -5338,10 +5289,22 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl, dep
             const max = Math.max(r, g, b), min = Math.min(r, g, b);
             const mouthMauve = r >= g + 6 && b >= g + 4 && Math.abs(r - b) <= 38;
             if (mouthMauve && max - min >= 4) return false;
+            if (max - min <= 18) return true;
             const sat = max > 0 ? (max - min) / max : 0;
-            const warmSkin = r >= g + 12 && g >= b + 6 && (r - b) >= 28;
-            // Preserve tinted greys without swallowing clearly warm skin colours.
-            return !warmSkin && (max - min <= 22 || (sat <= 0.18 && max - min <= 42));
+            if (sat <= 0.10 && max - min <= 28) return true;
+            const lum = 0.299*r + 0.587*g + 0.114*b;
+            const greenOrCyan = (g >= r + 8 && g >= b + 4) || (g >= r + 8 && b >= r + 8);
+            const blueOrPurple = b >= r + 10 || (b >= g + 10 && r >= g - 4);
+            const pinkOrMauve = r >= g + 10 && b >= g + 8;
+            const lightCream = lum > 188 && r >= g && g >= b && (r - b) > 24;
+            return sat <= 0.28
+                && max - min <= 58
+                && lum < 188
+                && !greenOrCyan
+                && !blueOrPurple
+                && !pinkOrMauve
+                && !mouthMauve
+                && !lightCream;
         }
         function neutralPaletteMatches(entry) {
             const max = Math.max(entry.r, entry.g, entry.b), min = Math.min(entry.r, entry.g, entry.b);
@@ -5496,7 +5459,9 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl, dep
                 const colorSpan = Math.max(r, g, b) - Math.min(r, g, b);
                 const rawFamily = colorFamily(r, g, b);
                 const trueGrey = useTrueGreyForPixel(r, g, b);
-                const family = rawFamily;
+                const family = (!trueGrey && rawFamily === 'neutral')
+                    ? mutedColorFamily(r, g, b)
+                    : rawFamily;
                 if (family === 'yellow' && shadeTier >= 2) {
                     let lighterNeighbors = 0, yellowNeighbors = 0;
                     for (let oy = -1; oy <= 1; oy++) {
