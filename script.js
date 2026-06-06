@@ -18,6 +18,8 @@ const backgroundLibrary = [
 const canvas = document.getElementById('worldCanvas');
 const ctx = canvas.getContext('2d');
 const viewport = document.getElementById('viewport');
+const altTextureExistsCache = {};
+const glowTextureExistsCache = {};
 
 let fgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
 let bgData = Array(GRID_X).fill().map(() => Array(GRID_Y).fill(null));
@@ -239,8 +241,45 @@ function ensureActiveLayer() {
     layerDeleteTargetId = layer.id;
     fgData = layer.fg;
     bgData = layer.bg;
+    waterData = layer.water || makeGrid();
+    layer.water = waterData;
     renderLayerPanel();
     return layer;
+}
+
+function beginGeneratedLayer(name = 'Generated Image', historyLabel = name) {
+    flushPendingHistorySnapshot();
+    saveHistory(historyLabel);
+    flushPendingHistorySnapshot();
+    syncActiveLayerRefs();
+
+    const layer = makeLayer(name);
+    layer.generated = true;
+    const activeIndex = editorLayers.findIndex(item => item.id === activeLayerId);
+    editorLayers.splice(activeIndex >= 0 ? activeIndex + 1 : editorLayers.length, 0, layer);
+    setActiveLayer(layer.id);
+    window.selectionActions?.deselect();
+    return layer;
+}
+
+function finishGeneratedLayer(historyLabel = 'Generate Image') {
+    syncActiveLayerRefs();
+    const layer = activeLayer();
+    if (layer) {
+        layer.arrangeRegion = null;
+        layer.resizeOriginal = null;
+        layer.renderCache = buildLayerRenderCache(layer);
+    }
+    recordHistorySnapshot(historyLabel);
+    renderLayerPanel();
+}
+
+function yieldFrame() {
+    return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function invalidateLayerRenderCache(layer) {
+    if (layer) layer.renderCache = null;
 }
 
 function clearActiveArrangeRegion() {
@@ -248,6 +287,7 @@ function clearActiveArrangeRegion() {
     if (layer) {
         layer.arrangeRegion = null;
         layer.resizeOriginal = null;
+        invalidateLayerRenderCache(layer);
     }
 }
 
@@ -280,6 +320,7 @@ function normalizeLayerIds(layers, savedLayerSeq = 1) {
             water: split.water,
             visible: layer.visible !== false,
             locked: !!layer.locked,
+            generated: !!layer.generated || /^Img to /i.test(layer.name || ''),
             arrangeRegion: cloneArrangeRegion(layer.arrangeRegion || layer._arrangeRegion),
             resizeOriginal: cloneArrangeRegion(layer.resizeOriginal)
         };
@@ -349,6 +390,7 @@ function captureEditorState() {
             water: cloneGrid(layer.water || makeGrid()),
             visible: layer.visible,
             locked: layer.locked,
+            generated: !!layer.generated,
             arrangeRegion: cloneArrangeRegion(layer.arrangeRegion),
             resizeOriginal: cloneArrangeRegion(layer.resizeOriginal)
         })),
@@ -392,13 +434,14 @@ function restoreEditorState(state) {
     renderLayerPanel();
 }
 
-function composeVisibleLayers() {
+function composeVisibleLayers(options = {}) {
     syncActiveLayerRefs();
     const fg = makeGrid();
     const bg = makeGrid();
     const water = makeGrid();
     editorLayers.forEach(layer => {
         if (!layer.visible) return;
+        if (options.skipCached && layer.renderCache) return;
         for (let x = 0; x < GRID_X; x++) {
             for (let y = 0; y < GRID_Y; y++) {
                 if (layer.bg[x][y]) bg[x][y] = layer.bg[x][y];
@@ -1035,6 +1078,9 @@ function restoreHistoryAt(index, options = {}) {
     if (index < 0 || index >= historyTimeline.length) return;
     historyIndex = index;
     restoreEditorState(historyTimeline[index].state);
+    window.selectionActions?.deselect();
+    arrangePanelSelectionIds.clear();
+    arrangeLayerHasFocus = false;
     renderHistoryPanel();
 }
 
@@ -1108,13 +1154,96 @@ function getBlockTexture(x, y, block) {
     }
     const altName = block.fileName.replace('.png', '_Alt.png');
     const isTopExposed = y === 0 || (fgData[x][y-1] === null || fgData[x][y-1]?.type === 'prop');
-    const hasAlt = ASSET_LIST.some(a => a.file === altName && a.folder === block.folder);
+    const altKey = `${block.folder}/${altName}`;
+    if (altTextureExistsCache[altKey] === undefined) {
+        altTextureExistsCache[altKey] = ASSET_LIST.some(a => a.file === altName && a.folder === block.folder);
+    }
+    const hasAlt = altTextureExistsCache[altKey];
 
     if (isTopExposed && hasAlt) {
         return getImg(`${BASE_PATH}${block.folder}/${altName}`);
     }
 
     return getImg(block.texture);
+}
+
+function getStaticBlockTexture(block) {
+    if (!block) return null;
+    return getImg(block.texture);
+}
+
+function drawCachedLayerCell(cacheCtx, block, x, y) {
+    const tex = getStaticBlockTexture(block);
+    if (tex && tex.complete && tex.naturalWidth > 0) {
+        cacheCtx.drawImage(tex, x * TILE, y * TILE, TILE, TILE);
+    }
+}
+
+function drawCachedLayerShadow(cacheCtx, layer, x, y, block) {
+    if (!shouldCastShadow(block)) return;
+    const tex = getStaticBlockTexture(block);
+    const silhouette = getShadowSilhouette(tex);
+    if (!silhouette) return;
+    const offsetX = block.type === 'prop' ? PROP_SHADOW_OFFSET_X : SHADOW_OFFSET;
+    const offsetY = block.type === 'prop' ? PROP_SHADOW_OFFSET_Y : SHADOW_OFFSET;
+    const px = x * TILE + offsetX;
+    const py = y * TILE + offsetY;
+    const minBx = Math.floor(px / TILE);
+    const maxBx = Math.floor((px + TILE - 1) / TILE);
+    const minBy = Math.floor(py / TILE);
+    const maxBy = Math.floor((py + TILE - 1) / TILE);
+    for (let bx = minBx; bx <= maxBx; bx++) {
+        for (let by = minBy; by <= maxBy; by++) {
+            if (bx < 0 || bx >= GRID_X || by < 0 || by >= GRID_Y) continue;
+            if (!layer.bg?.[bx]?.[by] || isWaterBlock(layer.bg[bx][by]) || layer.water?.[bx]?.[by]) continue;
+            const clipX = Math.max(px, bx * TILE);
+            const clipY = Math.max(py, by * TILE);
+            const clipW = Math.min(px + TILE, bx * TILE + TILE) - clipX;
+            const clipH = Math.min(py + TILE, by * TILE + TILE) - clipY;
+            if (clipW <= 0 || clipH <= 0) continue;
+            cacheCtx.save();
+            cacheCtx.globalAlpha = SHADOW_ALPHA;
+            cacheCtx.beginPath();
+            cacheCtx.rect(clipX, clipY, clipW, clipH);
+            cacheCtx.clip();
+            cacheCtx.drawImage(silhouette, px, py, TILE, TILE);
+            cacheCtx.restore();
+        }
+    }
+}
+
+function buildLayerRenderCache(layer) {
+    if (!layer) return null;
+    const cache = document.createElement('canvas');
+    cache.width = canvas.width;
+    cache.height = canvas.height;
+    const cacheCtx = cache.getContext('2d');
+
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const bg = layer.bg?.[x]?.[y];
+            if (bg && !isWaterBlock(bg)) drawCachedLayerCell(cacheCtx, bg, x, y);
+        }
+    }
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const fg = layer.fg?.[x]?.[y];
+            if (fg && !isWaterBlock(fg)) drawCachedLayerShadow(cacheCtx, layer, x, y, fg);
+        }
+    }
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const water = layer.water?.[x]?.[y] || (isWaterBlock(layer.fg?.[x]?.[y]) ? layer.fg[x][y] : null) || (isWaterBlock(layer.bg?.[x]?.[y]) ? layer.bg[x][y] : null);
+            if (water) drawCachedLayerCell(cacheCtx, water, x, y);
+        }
+    }
+    for (let x = 0; x < GRID_X; x++) {
+        for (let y = 0; y < GRID_Y; y++) {
+            const fg = layer.fg?.[x]?.[y];
+            if (fg && !isWaterBlock(fg)) drawCachedLayerCell(cacheCtx, fg, x, y);
+        }
+    }
+    return cache;
 }
 
 function saveHistory(label = 'Edit') {
@@ -1132,11 +1261,6 @@ function undo() {
         restoreHistoryAt(historyIndex - 1, { flush: false });
         return;
     }
-    if (history.length > 0) {
-        redoStack.push(captureEditorState());
-        const state = history.pop();
-        restoreEditorState(state);
-    }
 }
 
 function redo() {
@@ -1145,11 +1269,6 @@ function redo() {
     if (historyIndex >= 0 && historyIndex < historyTimeline.length - 1) {
         restoreHistoryAt(historyIndex + 1, { flush: false });
         return;
-    }
-    if (redoStack.length > 0) {
-        history.push(captureEditorState());
-        const state = redoStack.pop();
-        restoreEditorState(state);
     }
 }
 
@@ -2367,16 +2486,31 @@ function getShadowSilhouette(tex) {
     return oc;
 }
 
+let renderLoopActive = false;
+
 function render(time) {
+    renderLoopActive = true;
     const editingFgData = fgData;
     const editingBgData = bgData;
     const editingWaterData = waterData;
-    const compositeData = composeVisibleLayers();
+    const useLayerRenderCache = true;
+    syncActiveLayerRefs();
+    editorLayers.forEach(layer => {
+        if (useLayerRenderCache && layer.visible && layer.generated && !layer.renderCache) {
+            layer.renderCache = buildLayerRenderCache(layer);
+        }
+    });
+    const compositeData = composeVisibleLayers({ skipCached: useLayerRenderCache });
     fgData = compositeData.fg;
     bgData = compositeData.bg;
     waterData = compositeData.water;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (useLayerRenderCache) {
+        editorLayers.forEach(layer => {
+            if (layer.visible && layer.renderCache) ctx.drawImage(layer.renderCache, 0, 0);
+        });
+    }
     const glowAlpha = (Math.sin(time * 0.002) + 1) / 2;
 
     // --- Pass 1: draw background blocks (walls only, not water) ---
@@ -2468,7 +2602,11 @@ function render(time) {
         if (!baseTex) return;
         ctx.drawImage(baseTex, x * TILE, y * TILE, TILE, TILE);
         const glowName = block.fileName.replace('.png', '_Glow.png');
-        const hasGlow = ASSET_LIST.some(a => a.file === glowName && a.folder === block.folder);
+        const glowKey = `${block.folder}/${glowName}`;
+        if (glowTextureExistsCache[glowKey] === undefined) {
+            glowTextureExistsCache[glowKey] = ASSET_LIST.some(a => a.file === glowName && a.folder === block.folder);
+        }
+        const hasGlow = glowTextureExistsCache[glowKey];
         if (hasGlow) {
             const glowTex = getImg(`${BASE_PATH}${block.folder}/${glowName}`);
             if (glowTex && glowTex.complete) {
@@ -2520,6 +2658,8 @@ function render(time) {
 }
 
 function drawCanvas() {
+    if (renderLoopActive) return;
+    renderLoopActive = true;
     requestAnimationFrame(render);
 }
 
@@ -3061,6 +3201,7 @@ render();
                 bg: cloneGrid(item.data.bg)
             };
             layer.resizeOriginal = cloneArrangeRegion(layer.arrangeRegion);
+            invalidateLayerRenderCache(layer);
         });
         liftedArrangeLayers = null;
         liftedFrom = null;
@@ -3202,21 +3343,36 @@ render();
         return cloneArrangeRegion(region);
     }
 
-    function drawRegionPreview(data, drawX, drawY, alpha = 0.65) {
-        selCtx.save();
-        selCtx.globalAlpha = alpha;
+    function buildRegionPreviewCache(data) {
+        if (!data || !data.w || !data.h) return null;
+        const cache = document.createElement('canvas');
+        cache.width = data.w * TILE;
+        cache.height = data.h * TILE;
+        const cacheCtx = cache.getContext('2d');
         for (let dx = 0; dx < data.w; dx++) {
             for (let dy = 0; dy < data.h; dy++) {
-                const wx = drawX + dx, wy = drawY + dy;
-                if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
-                const blk = data.fg[dx][dy] || data.bg[dx][dy];
-                if (!blk) continue;
-                const tex = getImg(blk.texture);
-                if (tex && tex.complete && tex.naturalWidth > 0) {
-                    selCtx.drawImage(tex, wx * TILE, wy * TILE, TILE, TILE);
-                }
+                const bg = data.bg?.[dx]?.[dy];
+                const fg = data.fg?.[dx]?.[dy];
+                const water = data.water?.[dx]?.[dy];
+                [bg, water, fg].forEach(block => {
+                    if (!block) return;
+                    const tex = getStaticBlockTexture(block);
+                    if (tex && tex.complete && tex.naturalWidth > 0) {
+                        cacheCtx.drawImage(tex, dx * TILE, dy * TILE, TILE, TILE);
+                    }
+                });
             }
         }
+        return cache;
+    }
+
+    function drawRegionPreview(data, drawX, drawY, alpha = 0.65) {
+        if (!data) return;
+        if (!data._previewCache) data._previewCache = buildRegionPreviewCache(data);
+        if (!data._previewCache) return;
+        selCtx.save();
+        selCtx.globalAlpha = alpha;
+        selCtx.drawImage(data._previewCache, drawX * TILE, drawY * TILE);
         selCtx.restore();
     }
 
@@ -3330,6 +3486,7 @@ render();
                 }
                 layer.arrangeRegion = null;
                 layer.resizeOriginal = null;
+                invalidateLayerRenderCache(layer);
             });
             liftedFrom = { x: sel.x, y: sel.y };
             return;
@@ -3348,6 +3505,7 @@ render();
                     }
                 }
             }
+            invalidateLayerRenderCache(layer);
             liftedFrom = { x: sel.x, y: sel.y };
             return;
         }
@@ -3371,6 +3529,7 @@ render();
                 }
             }
         }
+        invalidateLayerRenderCache(layer);
         liftedFrom = { x: sel.x, y: sel.y };
     }
 
@@ -3407,6 +3566,7 @@ render();
                         bg: cloneGrid(item.data.bg)
                     };
                 }
+                invalidateLayerRenderCache(layer);
             });
             liftedArrangeLayers = null;
             liftedFrom = null;
@@ -3450,6 +3610,8 @@ render();
             }
         }
         liftedFg = null; liftedBg = null; liftedFrom = null;
+        invalidateLayerRenderCache(layer);
+        syncActiveLayerRefs();
         if (changed) scheduleHistorySnapshot('Move');
     }
 
@@ -3467,6 +3629,7 @@ render();
                         layer.bg[wx][wy] = item.data.bg[dx][dy];
                     }
                 }
+                invalidateLayerRenderCache(layer);
             });
             liftedArrangeLayers = null;
             liftedFrom = null;
@@ -3486,6 +3649,7 @@ render();
             }
         }
         liftedFg = null; liftedBg = null; liftedFrom = null;
+        invalidateLayerRenderCache(activeLayer());
     }
 
     // --- Canvas coord helpers ---
@@ -4467,35 +4631,158 @@ document.getElementById('custom-bg-remove-btn')?.addEventListener('click', () =>
 // ============================================================
 let i2bImgData = null;
 let i2bImgEl = null;
+const RECENT_IMAGE_KEY = 'pwworldeditor_recent_images_v1';
+const RECENT_IMAGE_LIMIT = 6;
+const RECENT_IMAGE_MAX_CHARS = 2200000;
+let recentImages = [];
+
+function loadRecentImages() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(RECENT_IMAGE_KEY) || '[]');
+        recentImages = Array.isArray(stored) ? stored.filter(img => img && img.data) : [];
+    } catch (e) {
+        recentImages = [];
+    }
+}
+
+function saveRecentImages() {
+    try {
+        localStorage.setItem(RECENT_IMAGE_KEY, JSON.stringify(recentImages));
+    } catch (e) {
+        const smaller = recentImages.filter(img => (img.data || '').length <= RECENT_IMAGE_MAX_CHARS).slice(0, 3);
+        try { localStorage.setItem(RECENT_IMAGE_KEY, JSON.stringify(smaller)); } catch (err) {}
+    }
+}
+
+function addRecentImage(name, data) {
+    if (!data) return;
+    const label = (name || `Image ${new Date().toLocaleTimeString()}`).split(/[\\/]/).pop();
+    recentImages = recentImages.filter(img => img.data !== data);
+    recentImages.unshift({
+        name: label,
+        data,
+        savedAt: Date.now()
+    });
+    recentImages = recentImages.slice(0, RECENT_IMAGE_LIMIT);
+    saveRecentImages();
+    renderRecentImagePickers();
+}
+
+function renderRecentImagePickers() {
+    const pickerIds = [
+        ['img2blocks-recent-select', 'img2blocks-recent-thumb'],
+        ['i2w-rep-recent-select', 'i2w-rep-recent-thumb'],
+        ['i2w-gen-recent-select', 'i2w-gen-recent-thumb']
+    ];
+    for (const [id, thumbId] of pickerIds) {
+        const select = document.getElementById(id);
+        if (!select) continue;
+        select.innerHTML = '';
+        if (!recentImages.length) {
+            select.innerHTML = '<option value="">No recent images</option>';
+            select.disabled = true;
+            updateRecentImageThumb(id, thumbId);
+            continue;
+        }
+        select.disabled = false;
+        recentImages.forEach((img, index) => {
+            const option = document.createElement('option');
+            option.value = String(index);
+            const name = img.name || `Recent image ${index + 1}`;
+            option.textContent = name.length > 34 ? `${name.slice(0, 18)}...${name.slice(-12)}` : name;
+            option.title = name;
+            select.appendChild(option);
+        });
+        updateRecentImageThumb(id, thumbId);
+        select.onchange = () => updateRecentImageThumb(id, thumbId);
+    }
+}
+
+function getSelectedRecentImage(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select || select.value === '') return null;
+    return recentImages[parseInt(select.value, 10)] || null;
+}
+
+function updateRecentImageThumb(selectId, thumbId) {
+    const thumb = document.getElementById(thumbId);
+    if (!thumb) return;
+    const recent = getSelectedRecentImage(selectId);
+    if (!recent) {
+        thumb.innerHTML = '<span>No</span>';
+        return;
+    }
+    thumb.innerHTML = `<img src="${recent.data}" alt="" title="${recent.name || ''}" style="width:100%;height:100%;object-fit:cover;display:block;">`;
+}
 
 const img2BlocksBtn = document.getElementById('img2blocks-btn');
 if (img2BlocksBtn) img2BlocksBtn.onclick = () => openMenu('img2blocks-popup');
 document.getElementById('img2blocks-upload-btn').onclick = () => document.getElementById('img2blocks-input').click();
+loadRecentImages();
+renderRecentImagePickers();
+function autoSizeImg2BlocksFields() {
+    if (!i2bImgData) return;
+    const sizeProbe = new Image();
+    sizeProbe.onload = () => {
+        const doFlip = document.getElementById('i2b-flip').checked;
+        const imgW = doFlip ? sizeProbe.height : sizeProbe.width;
+        const imgH = doFlip ? sizeProbe.width : sizeProbe.height;
+        const fit = Math.min(GRID_X / imgW, GRID_Y / imgH, 1);
+        const tileW = Math.max(1, Math.min(GRID_X, Math.round(imgW * fit)));
+        const tileH = Math.max(1, Math.min(GRID_Y, Math.round(imgH * fit)));
+        document.getElementById('i2b-w').value = tileW;
+        document.getElementById('i2b-h').value = tileH;
+        document.getElementById('i2b-x').value = Math.max(0, Math.floor((GRID_X - tileW) / 2));
+        document.getElementById('i2b-y').value = 0;
+        document.getElementById('i2b-status').innerText = `Image loaded. Auto size: ${tileW} x ${tileH} tiles.`;
+    };
+    sizeProbe.src = i2bImgData;
+}
+function setImg2BlocksImage(data, name, remember = true) {
+    i2bImgData = data;
+    const preview = document.getElementById('i2b-preview');
+    preview.innerHTML = `<img src="${i2bImgData}" title="${name || ''}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #444;">`;
+    document.getElementById('img2blocks-controls').classList.remove('hidden');
+    autoSizeImg2BlocksFields();
+    if (remember) addRecentImage(name, data);
+}
 document.getElementById('img2blocks-input').onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        i2bImgData = ev.target.result;
-        const preview = document.getElementById('i2b-preview');
-        preview.innerHTML = `<img src="${i2bImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #444;">`;
-        document.getElementById('img2blocks-controls').classList.remove('hidden');
-        document.getElementById('i2b-status').innerText = 'Image loaded. Configure settings and convert!';
+        setImg2BlocksImage(ev.target.result, file.name);
     };
     reader.readAsDataURL(file);
     e.target.value = '';
 };
+document.getElementById('img2blocks-recent-use-btn')?.addEventListener('click', () => {
+    const recent = getSelectedRecentImage('img2blocks-recent-select');
+    if (!recent) return;
+    setImg2BlocksImage(recent.data, recent.name, false);
+});
+document.getElementById('i2b-flip').onchange = autoSizeImg2BlocksFields;
 
-// Variety slider label updater
-document.getElementById('i2b-variety').oninput = (e) => {
-    const labels = [
-        'Pixel blocks only -clean pixel art mode',
-        'HD Depth Art -FG+BG layers + 3-tier shading',
-        'HD Depth Art + wall tiles (richer palette)',
-        'HD Depth Art -everything inc. props & water'
-    ];
-    document.getElementById('i2b-variety-label').innerText = labels[parseInt(e.target.value) - 1];
-};
+const generationLocks = {};
+let img2BlocksSection = 'pixel';
+function setImg2BlocksSection(section) {
+    img2BlocksSection = section === 'world' ? 'world' : 'pixel';
+    document.getElementById('i2b-variety').value = img2BlocksSection === 'pixel' ? '1' : '2';
+    document.querySelectorAll('.i2b-pixel-controls').forEach(el => el.classList.toggle('hidden', img2BlocksSection !== 'pixel'));
+    document.querySelectorAll('.i2b-world-controls').forEach(el => el.classList.toggle('hidden', img2BlocksSection !== 'world'));
+    document.getElementById('i2b-section-pixel')?.classList.toggle('highlight', img2BlocksSection === 'pixel');
+    document.getElementById('i2b-section-world')?.classList.toggle('highlight', img2BlocksSection === 'world');
+    const label = document.getElementById('i2b-section-label');
+    if (label) label.innerText = img2BlocksSection === 'pixel' ? 'Pixel Art' : 'World Asset';
+    const btn = document.getElementById('img2blocks-convert-btn');
+    if (btn && !generationLocks.img2blocks) {
+        btn.innerText = img2BlocksSection === 'pixel' ? 'Convert to Pixel Art' : 'Build World Asset';
+        btn.dataset.originalText = btn.innerText;
+    }
+}
+document.getElementById('i2b-section-pixel')?.addEventListener('click', () => setImg2BlocksSection('pixel'));
+document.getElementById('i2b-section-world')?.addEventListener('click', () => setImg2BlocksSection('world'));
+setImg2BlocksSection('pixel');
 
 // ---
 // SHARED: Sample average color from a block texture
@@ -4542,6 +4829,41 @@ function findClosestBlock(r, g, b, palette) {
     return best;
 }
 
+function beginGenerationLock(key, buttonId, busyText) {
+    if (generationLocks[key]) return null;
+    const btn = document.getElementById(buttonId);
+    generationLocks[key] = true;
+    if (btn) {
+        btn.dataset.originalText = btn.innerText;
+        btn.disabled = true;
+        btn.innerText = busyText;
+        btn.classList.add('is-generating');
+    }
+    return () => {
+        generationLocks[key] = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = btn.dataset.originalText || btn.innerText;
+            btn.classList.remove('is-generating');
+        }
+    };
+}
+
+function isGreyLeanAssetName(block) {
+    const name = ((block && (block.fileName || block.name || block.label)) || '').toLowerCase();
+    return name.includes('grey')
+        || name.includes('gray')
+        || name.includes('moon raker')
+        || name.includes('moonraker')
+        || name.includes('moon racker')
+        || name.includes('moonracker')
+        || name.includes('moon rock')
+        || name.includes('moon soil')
+        || name.includes('soilblockgrey')
+        || name.includes('amethyst smoke')
+        || name.includes('salt box');
+}
+
 // ---
 // SHARED: Sample image into pixel canvas + collect pixel data
 // ---
@@ -4549,6 +4871,8 @@ function sampleImageToCanvas(tempImg, outW, outH, doFlip) {
     const offscreen = document.createElement('canvas');
     offscreen.width = outW; offscreen.height = outH;
     const offCtx = offscreen.getContext('2d');
+    offCtx.imageSmoothingEnabled = true;
+    offCtx.imageSmoothingQuality = 'high';
     if (doFlip) {
         offCtx.save();
         offCtx.translate(outW, 0);
@@ -4558,7 +4882,54 @@ function sampleImageToCanvas(tempImg, outW, outH, doFlip) {
     } else {
         offCtx.drawImage(tempImg, 0, 0, outW, outH);
     }
-    return offCtx.getImageData(0, 0, outW, outH).data;
+    return cleanSampledPixels(offCtx.getImageData(0, 0, outW, outH).data, outW, outH);
+}
+
+// Remove isolated resampling speckles without changing established colour or
+// depth behavior. Pixels are replaced only when the surrounding area is highly
+// consistent and the center pixel is a clear outlier.
+function cleanSampledPixels(pixelData, width, height) {
+    const source = new Uint8ClampedArray(pixelData);
+    const cleaned = new Uint8ClampedArray(pixelData);
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            const center = (y * width + x) * 4;
+            if (source[center + 3] < 64) continue;
+
+            let count = 0, r = 0, g = 0, b = 0;
+            for (let oy = -1; oy <= 1; oy++) {
+                for (let ox = -1; ox <= 1; ox++) {
+                    if (ox === 0 && oy === 0) continue;
+                    const ni = ((y + oy) * width + x + ox) * 4;
+                    if (source[ni + 3] < 64) continue;
+                    r += source[ni]; g += source[ni + 1]; b += source[ni + 2];
+                    count++;
+                }
+            }
+            if (count < 6) continue;
+            r /= count; g /= count; b /= count;
+
+            let variance = 0;
+            for (let oy = -1; oy <= 1; oy++) {
+                for (let ox = -1; ox <= 1; ox++) {
+                    if (ox === 0 && oy === 0) continue;
+                    const ni = ((y + oy) * width + x + ox) * 4;
+                    if (source[ni + 3] < 64) continue;
+                    const dr = source[ni] - r, dg = source[ni + 1] - g, db = source[ni + 2] - b;
+                    variance += dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                }
+            }
+            variance /= count;
+            const dr = source[center] - r, dg = source[center + 1] - g, db = source[center + 2] - b;
+            const centerDist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+            if (variance < 550 && centerDist > 2200) {
+                cleaned[center] = Math.round(r);
+                cleaned[center + 1] = Math.round(g);
+                cleaned[center + 2] = Math.round(b);
+            }
+        }
+    }
+    return cleaned;
 }
 
 // ---
@@ -4590,18 +4961,24 @@ function batchSampleBlocks(candidateBlocks, statusEl, label, callback) {
 // meaning it is essentially grayscale and should be treated as ink art.
 // ---
 function detectMonochrome(pixelData, outW, outH) {
-    let totalSat = 0, count = 0;
+    let totalSat = 0, count = 0, strongColor = 0, warmAccent = 0;
     for (let i = 0; i < outW * outH; i++) {
         const pi = i * 4;
         if (pixelData[pi+3] < 64) continue;
         const r = pixelData[pi] / 255, g = pixelData[pi+1] / 255, b = pixelData[pi+2] / 255;
         const max = Math.max(r, g, b), min = Math.min(r, g, b);
-        totalSat += (max - min);
+        const span = max - min;
+        const sat = max > 0 ? span / max : 0;
+        totalSat += span;
+        if (sat > 0.24 && max > 0.22) strongColor++;
+        if (r > g + 0.08 && g > b + 0.04 && sat > 0.20 && max > 0.20) warmAccent++;
         count++;
     }
     if (count === 0) return false;
-    // Average saturation below 0.08 = effectively grayscale
-    return (totalSat / count) < 0.08;
+    // Average saturation below 0.08 is grayscale only when there are no meaningful accent colors.
+    return (totalSat / count) < 0.08
+        && (strongColor / count) < 0.004
+        && (warmAccent / count) < 0.002;
 }
 
 // ---
@@ -4615,7 +4992,7 @@ function detectMonochrome(pixelData, outW, outH) {
 // The Sobel edge map is used to boost ink lines -edges always get at least Tier 1
 // regardless of raw luminance, so fine hair lines and contour strokes are never lost.
 // ---
-function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
+function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl, onComplete = null) {
     const candidateBlocks = blockLibrary.filter(b => {
         if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
         const frameMatch = b.fileName.match(/_(\d+)\.png$/);
@@ -4625,15 +5002,15 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
 
     if (candidateBlocks.length === 0) {
         statusEl.innerText = 'Error: No Pixel Blocks found!';
+        if (onComplete) onComplete();
         return;
     }
 
     batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks (ink art)...', (palette) => {
-        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
+        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; if (onComplete) onComplete(); return; }
 
         statusEl.innerText = `Placing ink art blocks with ${palette.length} colors...`;
-        saveHistory();
-        ensureActiveLayer();
+        beginGeneratedLayer('Img to Blocks', 'Image to Blocks');
 
         // --- Build luminance map ---
         const lumMap = new Float32Array(outW * outH);
@@ -4648,7 +5025,14 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
             if (lumMap[i] < minLum) minLum = lumMap[i];
             if (lumMap[i] > maxLum) maxLum = lumMap[i];
         }
-        const lumRange = Math.max(maxLum - minLum, 1);
+        let lumRange = Math.max(maxLum - minLum, 1);
+        let opaqueCount = 0, transparentCount = 0;
+        for (let i = 0; i < outW * outH; i++) {
+            const a = pixelData[i * 4 + 3];
+            if (a < 64) transparentCount++;
+            else opaqueCount++;
+        }
+        const preserveLightShape = transparentCount > opaqueCount * 0.12;
 
         // --- Sobel edge map -critical for preserving ink strokes ---
         const edgeMap = new Float32Array(outW * outH);
@@ -4669,13 +5053,14 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
         for (let i = 0; i < edgeMap.length; i++) edgeMap[i] /= maxEdge;
 
         // --- Build ink density tiers targeting B&W blocks ---
-        // Target luminances for each tier: solid black ->dark grey ->mid grey
+        // Target luminances for each tier: solid black ->dark grey ->mid grey ->white fill
         const INK_TARGETS = [
             { r: 20,  g: 20,  b: 20  },  // Tier 0: solid ink
             { r: 70,  g: 70,  b: 70  },  // Tier 1: dark tone
             { r: 150, g: 150, b: 150 },  // Tier 2: halftone/grey
+            { r: 242, g: 242, b: 242 },  // Tier 3: white fill for transparent-object art
         ];
-        const tierCache = [{}, {}, {}];
+        const tierCache = [{}, {}, {}, {}];
         function getInkBlock(tier) {
             const t = INK_TARGETS[tier];
             const key = tier;
@@ -4684,11 +5069,16 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
             tierCache[tier][key] = best ? best.block : null;
             return tierCache[tier][key];
         }
-        // Pre-compute the three tier blocks once
-        const tierBlocks = [getInkBlock(0), getInkBlock(1), getInkBlock(2)];
+        // Pre-compute the tier blocks once
+        const tierBlocks = [getInkBlock(0), getInkBlock(1), getInkBlock(2), getInkBlock(3)];
 
         let placed = 0;
+        (async () => {
         for (let ty = 0; ty < outH; ty++) {
+            if (ty % 2 === 0) {
+                statusEl.innerText = `Placing ink art... row ${ty+1}/${outH} (${placed} placed)`;
+                await yieldFrame();
+            }
             for (let tx = 0; tx < outW; tx++) {
                 const pi = (ty * outW + tx) * 4;
                 const a = pixelData[pi+3];
@@ -4705,13 +5095,12 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
                 // Edges always get elevated by at least 0.25 so ink strokes are never lost
                 const effectiveDensity = Math.min(1.0, inkDensity + edgeStr * 0.25);
 
-                // Skip near-white (paper) pixels -this is the correct direction for ink art
-                if (effectiveDensity < 0.22) continue;
-
                 let tier;
                 if      (effectiveDensity >= 0.72) tier = 0;  // solid ink ->darkest block
                 else if (effectiveDensity >= 0.45) tier = 1;  // dark tone
-                else                               tier = 2;  // halftone
+                else if (effectiveDensity >= 0.22) tier = 2;  // halftone
+                else if (preserveLightShape)       tier = 3;  // white object fill
+                else continue; // paper-like scan: leave near-white paper empty
 
                 const wx = startX + tx, wy = startY + ty;
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
@@ -4723,8 +5112,17 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
                     placed++;
                 }
             }
+            if (ty % 6 === 0) drawCanvas();
         }
-        statusEl.innerText = `Done: Ink art done! ${placed} blocks placed with 4-tier ink density.`;
+        drawCanvas();
+        finishGeneratedLayer('Image to Blocks');
+        statusEl.innerText = `Done: Ink art done! ${placed} blocks placed${preserveLightShape ? ' with white fill preserved' : ' with paper left empty'}.`;
+        if (onComplete) onComplete();
+        })().catch(err => {
+            console.error(err);
+            statusEl.innerText = 'Error: Ink art generation failed.';
+            if (onComplete) onComplete();
+        });
     });
 }
 
@@ -4734,11 +5132,11 @@ function runInkArtMode(pixelData, outW, outH, startX, startY, statusEl) {
 // Auto-detects monochrome/ink art and switches to runInkArtMode.
 // For color images: shading via luminance+edge darkFactor, 3 tiers.
 // ---
-function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
+function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl, depthMode = 'blocks-base', outlineMode = false, onComplete = null) {
     // --- Auto-detect B&W / ink art and use the correct mode ---
     if (detectMonochrome(pixelData, outW, outH)) {
         statusEl.innerText = 'art detected -switching to ink art mode...';
-        runInkArtMode(pixelData, outW, outH, startX, startY, statusEl);
+        runInkArtMode(pixelData, outW, outH, startX, startY, statusEl, onComplete);
         return;
     }
 
@@ -4748,18 +5146,32 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
         if (frameMatch && frameMatch[1] !== '0') return false;
         return b.fileName.startsWith('Pixel Block');
     });
+    const candidateBackgrounds = blockLibrary.filter(b => {
+        if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
+        const frameMatch = b.fileName.match(/_(\d+)\.png$/);
+        if (frameMatch && frameMatch[1] !== '0') return false;
+        return b.type === 'wall' && b.fileName.startsWith('PixelBackground');
+    });
 
     if (candidateBlocks.length === 0) {
         statusEl.innerText = 'Error: No Pixel Blocks found!';
+        if (onComplete) onComplete();
         return;
     }
 
     batchSampleBlocks(candidateBlocks, statusEl, 'Sampling pixel blocks...', (palette) => {
-        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; return; }
+        if (palette.length === 0) { statusEl.innerText = 'Error: Could not sample pixel block colors.'; if (onComplete) onComplete(); return; }
+        batchSampleBlocks(candidateBackgrounds, statusEl, 'Sampling pixel backgrounds...', (bgPalette) => {
 
-        statusEl.innerText = `Placing shaded pixel blocks with ${palette.length} colors...`;
-        saveHistory();
-        ensureActiveLayer();
+        const backgroundBase = depthMode === 'background-base';
+        const combinationMode = depthMode === 'combination';
+        const modeLabel = backgroundBase
+            ? 'background base with sparse block depth'
+            : combinationMode
+                ? 'combination depth with strong blocks/background mix'
+                : 'block base with background depth';
+        statusEl.innerText = `Placing ${modeLabel} using ${palette.length} fg colors and ${bgPalette.length} bg colors...`;
+        beginGeneratedLayer('Img to Blocks', 'Image to Blocks');
 
         // --- Global luminance range ---
         const lumMap = new Float32Array(outW * outH);
@@ -4774,7 +5186,40 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
             if (lumMap[i] < minLum) minLum = lumMap[i];
             if (lumMap[i] > maxLum) maxLum = lumMap[i];
         }
+        if (minLum > maxLum) { minLum = 0; maxLum = 255; }
         const lumRange = Math.max(maxLum - minLum, 1);
+
+        function analyzeImageColorIntent() {
+            let count = 0, strongColor = 0, greyish = 0;
+            const families = { red: 0, orange: 0, yellow: 0, green: 0, cyan: 0, blue: 0, mauve: 0 };
+            for (let i = 0; i < outW * outH; i++) {
+                const pi = i * 4;
+                if (pixelData[pi+3] < 64) continue;
+                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2];
+                const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                const sat = max > 0 ? (max - min) / max : 0;
+                const lum = 0.299*r + 0.587*g + 0.114*b;
+                count++;
+                if (sat > 0.20 && lum > 22) {
+                    strongColor++;
+                    const fam = colorFamily(r, g, b);
+                    if (families[fam] !== undefined) families[fam]++;
+                }
+                if (sat < 0.12 && lum > 24 && lum < 220) greyish++;
+            }
+            let dominantFamily = 'blue', best = -1;
+            Object.entries(families).forEach(([family, total]) => {
+                if (total > best) { best = total; dominantFamily = family; }
+            });
+            const strongRatio = count ? strongColor / count : 0;
+            const greyRatio = count ? greyish / count : 0;
+            return {
+                colorful: strongRatio > 0.04 && strongRatio > greyRatio * 0.20,
+                dominantFamily,
+                greyRatio,
+                strongRatio
+            };
+        }
 
         // --- Sobel edge map ---
         const edgeMap = new Float32Array(outW * outH);
@@ -4798,9 +5243,11 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
         // Tier 0 (highlight): color x 1.0
         // Tier 1 (midtone):   color x 0.72
         // Tier 2 (shadow):    color x 0.48
-        // Tier 3 (deep):      skip FG entirely (leave empty)
-        const SHADE_MULT = [1.0, 0.72, 0.48];
+        // Tier 3 (deep):      color x 0.30
+        const SHADE_MULT = [1.0, 0.82, 0.64, 0.48];
+        const BG_SHADE_MULT = SHADE_MULT;
         const shadeCache = {};
+        const bgShadeCache = {};
         function getShadedBlock(r, g, b, tier) {
             const key = `${r>>2},${g>>2},${b>>2},${tier}`;
             if (shadeCache[key] !== undefined) return shadeCache[key];
@@ -4809,9 +5256,219 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
             shadeCache[key] = best ? best.block : null;
             return shadeCache[key];
         }
+        function colorFamily(r, g, b) {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            const mauveBias = r >= g + 6 && b >= g + 4 && Math.abs(r - b) <= 38;
+            if (mauveBias && max - min >= 4) return 'mauve';
+            if (max - min < 12) return 'neutral';
+            if (b >= g + 8 && b >= r + 12) return 'blue';
+            const rr = r / 255, gg = g / 255, bb = b / 255;
+            const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
+            const d = mx - mn;
+            const sat = mx > 0 ? d / mx : 0;
+            if (sat < 0.18) return 'neutral';
+            let h = 0;
+            if (d > 0) {
+                if (mx === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+                else if (mx === gg) h = ((bb - rr) / d + 2) / 6;
+                else h = ((rr - gg) / d + 4) / 6;
+            }
+            if (h < 0.045 || h >= 0.93) return 'red';
+            if (h < 0.095) return 'orange';
+            if (h < 0.18) return 'yellow';
+            if (h < 0.42) return 'green';
+            if (h < 0.58) return 'cyan';
+            if (h < 0.72) return 'blue';
+            return 'neutral';
+        }
+        const imageColorIntent = analyzeImageColorIntent();
+        function mutedColorFamily(r, g, b) {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            if (max - min <= 3) return imageColorIntent.dominantFamily || 'blue';
+            if (b >= r && b >= g) return (r >= g + 4) ? 'mauve' : 'blue';
+            if (r >= g && r >= b) {
+                if (b >= g + 4) return 'mauve';
+                if (g >= b + 8) return 'orange';
+                return 'red';
+            }
+            if (g >= r && g >= b) return b >= r + 4 ? 'cyan' : 'green';
+            return imageColorIntent.dominantFamily || 'blue';
+        }
+        function useTrueGreyForPixel(r, g, b) {
+            return isTrueGreyPixel(r, g, b);
+        }
+        function familyMatches(entry, family) {
+            if (family === 'neutral') return neutralPaletteMatches(entry);
+            const assetName = ((entry.block && (entry.block.fileName || entry.block.name)) || '').toLowerCase();
+            const entryFamily = colorFamily(entry.r, entry.g, entry.b);
+            if (isGreyLeanAssetName(entry.block)) return false;
+            if (family === 'yellow') return entryFamily === 'yellow' || entryFamily === 'orange';
+            if (family === 'green') return entryFamily === 'green' || entryFamily === 'cyan';
+            if (family === 'cyan') {
+                const brightMint = entryFamily === 'green' && entry.g >= entry.b && entry.r >= 90 && entry.g >= 165 && entry.b >= 135;
+                return entryFamily === 'cyan' || entryFamily === 'blue' || brightMint;
+            }
+            if (family === 'mauve') {
+                return assetName.includes('amethyst')
+                    || assetName.includes('seance')
+                    || assetName.includes('deluge')
+                    || assetName.includes('brilliantrose')
+                    || assetName.includes('brilliant rose')
+                    || assetName.includes('classicrose')
+                    || assetName.includes('classic rose')
+                    || assetName.includes('moonraker')
+                    || assetName.includes('moon raker')
+                    || entryFamily === 'mauve';
+            }
+            return entryFamily === family;
+        }
+        function findClosestFamilyBlock(r, g, b, candidates, family) {
+            let best = null, bestDist = Infinity;
+            for (const entry of candidates) {
+                if (!familyMatches(entry, family)) continue;
+                const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+                const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                if (dist < bestDist) { bestDist = dist; best = entry; }
+            }
+            if (best) return best;
+            const safeCandidates = candidates.filter(entry => !isGreyLeanAssetName(entry.block) && !neutralPaletteMatches(entry));
+            return findClosestBlock(r, g, b, safeCandidates.length ? safeCandidates : candidates);
+        }
+        function isTrueGreyPixel(r, g, b) {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            const mouthMauve = r >= g + 6 && b >= g + 4 && Math.abs(r - b) <= 38;
+            if (mouthMauve && max - min >= 4) return false;
+            const sat = max > 0 ? (max - min) / max : 0;
+            const warmSkin = r >= g + 12 && g >= b + 6 && (r - b) >= 28;
+            // Preserve tinted greys without swallowing clearly warm skin colours.
+            return !warmSkin && (max - min <= 22 || (sat <= 0.18 && max - min <= 42));
+        }
+        function neutralPaletteMatches(entry) {
+            const max = Math.max(entry.r, entry.g, entry.b), min = Math.min(entry.r, entry.g, entry.b);
+            const sat = max > 0 ? (max - min) / max : 0;
+            return (max - min) <= 24 || sat <= 0.12;
+        }
+        function findClosestNeutralBlock(r, g, b, candidates) {
+            let best = null, bestDist = Infinity;
+            for (const entry of candidates) {
+                if (!neutralPaletteMatches(entry)) continue;
+                const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+                const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                if (dist < bestDist) { bestDist = dist; best = entry; }
+            }
+            return best || findClosestBlock(r, g, b, candidates);
+        }
+        function getFamilyShadedBlock(r, g, b, tier, family) {
+            if (family === 'neutral') return getShadedBlock(r, g, b, tier);
+            const key = `${r>>2},${g>>2},${b>>2},${tier},${family}`;
+            if (shadeCache[key] !== undefined) return shadeCache[key];
+            const familyShadeMult = family === 'yellow' ? [1.0, 0.74, 0.52, 0.38] : SHADE_MULT;
+            const m = familyShadeMult[tier];
+            const best = findClosestFamilyBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), palette, family);
+            shadeCache[key] = best ? best.block : null;
+            return shadeCache[key];
+        }
+        function getTrueGreyShadedBlock(r, g, b, tier) {
+            const key = `grey:${r>>2},${g>>2},${b>>2},${tier}`;
+            if (shadeCache[key] !== undefined) return shadeCache[key];
+            const m = SHADE_MULT[tier];
+            const best = findClosestNeutralBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), palette);
+            shadeCache[key] = best ? best.block : null;
+            return shadeCache[key];
+        }
+        function getShadedBackground(r, g, b, tier) {
+            if (!bgPalette.length) return null;
+            const key = `${r>>2},${g>>2},${b>>2},${tier}`;
+            if (bgShadeCache[key] !== undefined) return bgShadeCache[key];
+            const m = BG_SHADE_MULT[tier];
+            const best = findClosestBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), bgPalette);
+            bgShadeCache[key] = best ? best.block : null;
+            return bgShadeCache[key];
+        }
+        function getTrueGreyShadedBackground(r, g, b, tier) {
+            if (!bgPalette.length) return null;
+            const key = `grey:${r>>2},${g>>2},${b>>2},${tier}`;
+            if (bgShadeCache[key] !== undefined) return bgShadeCache[key];
+            const m = BG_SHADE_MULT[tier];
+            const best = findClosestNeutralBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), bgPalette);
+            bgShadeCache[key] = best ? best.block : null;
+            return bgShadeCache[key];
+        }
+        function getFamilyShadedBackground(r, g, b, tier, family) {
+            if (!bgPalette.length) return null;
+            if (family === 'neutral') return getShadedBackground(r, g, b, tier);
+            const key = `${r>>2},${g>>2},${b>>2},${tier},${family}`;
+            if (bgShadeCache[key] !== undefined) return bgShadeCache[key];
+            const familyShadeMult = family === 'yellow' ? [1.0, 0.74, 0.52, 0.38] : BG_SHADE_MULT;
+            const m = familyShadeMult[tier];
+            const best = findClosestFamilyBlock(Math.round(r*m), Math.round(g*m), Math.round(b*m), bgPalette, family);
+            bgShadeCache[key] = best ? best.block : null;
+            return bgShadeCache[key];
+        }
+        const bgByPixelName = {};
+        function pixelAssetKey(name) {
+            return (name || '')
+                .replace(/\.png$/i, '')
+                .replace(/^Pixel\s*Block\s*-?\s*/i, '')
+                .replace(/^PixelBackground/i, '')
+                .replace(/[^a-z0-9]/gi, '')
+                .toLowerCase();
+        }
+        for (const entry of bgPalette) {
+            const key = pixelAssetKey(entry.block.fileName || entry.block.name);
+            if (key) bgByPixelName[key] = entry.block;
+        }
+        function matchingPixelBackground(block, fallback) {
+            if (!block) return fallback || null;
+            const key = pixelAssetKey(block.fileName || block.name);
+            return bgByPixelName[key] || fallback || null;
+        }
+        function pickOutlineBlock() {
+            const preferred = ['black rock', 'black', 'valhalla', 'toledo', 'eden'];
+            for (const namePart of preferred) {
+                const found = palette.find(entry => {
+                    const name = ((entry.block.fileName || entry.block.name) || '').toLowerCase();
+                    return name.includes(namePart);
+                });
+                if (found) return found.block;
+            }
+            const best = findClosestBlock(18, 22, 24, palette);
+            return best ? best.block : null;
+        }
+        function internalOutlineScore(tx, ty, r, g, b, lum, family) {
+            let strongest = 0;
+            for (let oy = -1; oy <= 1; oy++) {
+                for (let ox = -1; ox <= 1; ox++) {
+                    if (Math.abs(ox) + Math.abs(oy) !== 1) continue;
+                    const nx = tx + ox, ny = ty + oy;
+                    if (nx < 0 || nx >= outW || ny < 0 || ny >= outH) continue;
+                    const npi = (ny * outW + nx) * 4;
+                    if (pixelData[npi+3] < 64) continue;
+                    const nr = pixelData[npi], ng = pixelData[npi+1], nb = pixelData[npi+2];
+                    const nLum = lumMap[ny * outW + nx];
+                    if (nLum < 0) continue;
+                    const nFamily = colorFamily(nr, ng, nb);
+                    const dr = r - nr, dg = g - ng, db = b - nb;
+                    const colorDiff = Math.sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114);
+                    const lumDiff = Math.abs(lum - nLum);
+                    const darkerSide = lum <= nLum + 7;
+                    const familyBreak = family !== nFamily && colorDiff > 18;
+                    const formBreak = colorDiff > 30 || lumDiff > 24;
+                    if ((familyBreak || formBreak) && darkerSide) {
+                        strongest = Math.max(strongest, Math.min(1, (colorDiff * 0.018) + (lumDiff * 0.012)));
+                    }
+                }
+            }
+            return strongest;
+        }
 
-        let placed = 0;
+        let placed = 0, bgPlaced = 0;
+        (async () => {
         for (let ty = 0; ty < outH; ty++) {
+            if (ty % 2 === 0) {
+                statusEl.innerText = `Placing ${modeLabel}... row ${ty+1}/${outH} (${placed} fg, ${bgPlaced} bg)`;
+                await yieldFrame();
+            }
             for (let tx = 0; tx < outW; tx++) {
                 const pi = (ty * outW + tx) * 4;
                 const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
@@ -4826,26 +5483,145 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
                 const edgeStr = edgeMap[idx];
                 const darkFactor = normLum * 0.70 + edgeStr * 0.30;
 
-                // Tier 3 = leave empty (natural gap = depth)
-                if (darkFactor >= 0.75) continue;
-
                 let shadeTier;
                 if      (darkFactor < 0.25) shadeTier = 0;
                 else if (darkFactor < 0.50) shadeTier = 1;
-                else                        shadeTier = 2;
+                else if (darkFactor < 0.75) shadeTier = 2;
+                else                        shadeTier = 3;
 
                 const wx = startX + tx, wy = startY + ty;
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
                 if (isProtectedTile(wx, wy)) continue;
 
-                const block = getShadedBlock(r, g, b, shadeTier);
-                if (block) {
-                    fgData[wx][wy] = JSON.parse(JSON.stringify(block));
-                    placed++;
+                const colorSpan = Math.max(r, g, b) - Math.min(r, g, b);
+                const rawFamily = colorFamily(r, g, b);
+                const trueGrey = useTrueGreyForPixel(r, g, b);
+                const family = rawFamily;
+                if (family === 'yellow' && shadeTier >= 2) {
+                    let lighterNeighbors = 0, yellowNeighbors = 0;
+                    for (let oy = -1; oy <= 1; oy++) {
+                        for (let ox = -1; ox <= 1; ox++) {
+                            if (ox === 0 && oy === 0) continue;
+                            const nx = tx + ox, ny = ty + oy;
+                            if (nx < 0 || nx >= outW || ny < 0 || ny >= outH) continue;
+                            const npi = (ny * outW + nx) * 4;
+                            if (pixelData[npi+3] < 64) continue;
+                            const nr = pixelData[npi], ng = pixelData[npi+1], nb = pixelData[npi+2];
+                            if (colorFamily(nr, ng, nb) !== 'yellow') continue;
+                            yellowNeighbors++;
+                            const nLum = lumMap[ny * outW + nx];
+                            if (nLum > lum + 18) lighterNeighbors++;
+                        }
+                    }
+                    if (yellowNeighbors >= 4 && lighterNeighbors >= 5) shadeTier--;
+                }
+                const hueSafe = family !== 'neutral' || colorSpan > 22;
+                const baseTier = hueSafe ? Math.min(shadeTier, 2) : shadeTier;
+                const insideEdge = internalOutlineScore(tx, ty, r, g, b, lum, family) > 0.50;
+                const edgeOutline = (family === 'green' || family === 'cyan')
+                    && (edgeStr > 0.42 || insideEdge)
+                    && darkFactor > 0.24;
+                const depthTier = edgeOutline ? 3 : Math.min(3, baseTier + 1);
+                const block = trueGrey ? getTrueGreyShadedBlock(r, g, b, baseTier) : getFamilyShadedBlock(r, g, b, baseTier, family);
+                const depthBlock = (shadeTier >= 2 || edgeOutline)
+                    ? (trueGrey ? getTrueGreyShadedBlock(r, g, b, depthTier) : getFamilyShadedBlock(r, g, b, depthTier, family))
+                    : null;
+                const baseBgBlock = trueGrey
+                    ? matchingPixelBackground(block, getTrueGreyShadedBackground(r, g, b, baseTier))
+                    : matchingPixelBackground(block, getFamilyShadedBackground(r, g, b, baseTier, family));
+                const depthBgBlock = (shadeTier >= 2 || edgeOutline)
+                    ? (trueGrey
+                        ? matchingPixelBackground(depthBlock, getTrueGreyShadedBackground(r, g, b, depthTier))
+                        : matchingPixelBackground(depthBlock, getFamilyShadedBackground(r, g, b, depthTier, family)))
+                    : null;
+                if (backgroundBase) {
+                    if (baseBgBlock) {
+                        bgData[wx][wy] = JSON.parse(JSON.stringify(baseBgBlock));
+                        bgPlaced++;
+                    } else if (block) {
+                        fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                        placed++;
+                    }
+                    if (depthBlock && (shadeTier >= 3 || edgeOutline)) {
+                        fgData[wx][wy] = JSON.parse(JSON.stringify(depthBlock));
+                        placed++;
+                    }
+                } else {
+                    const useBackgroundDepth = !!depthBgBlock
+                        && (combinationMode
+                            ? (shadeTier >= 2 || edgeOutline)
+                            : (shadeTier >= 3 || edgeOutline || (shadeTier >= 2 && darkFactor > 0.62 && edgeStr > 0.08)));
+                    if (useBackgroundDepth) {
+                        bgData[wx][wy] = JSON.parse(JSON.stringify(depthBgBlock));
+                        bgPlaced++;
+                    } else if (block) {
+                        fgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                        placed++;
+                    }
                 }
             }
+            if (ty % 6 === 0) drawCanvas();
         }
-        statusEl.innerText = `Done: Pixel art done! ${placed} blocks placed with 3-tier shading.`;
+        if (outlineMode) {
+            const outlineBlock = pickOutlineBlock();
+            if (outlineBlock) {
+                let outlinePlaced = 0;
+                for (let ty = 0; ty < outH; ty++) {
+                    if (ty % 3 === 0) {
+                        statusEl.innerText = `Outline mode... row ${ty+1}/${outH} (${outlinePlaced} outline)`;
+                        await yieldFrame();
+                    }
+                    for (let tx = 0; tx < outW; tx++) {
+                        const idx = ty * outW + tx;
+                        const pi = idx * 4;
+                        if (pixelData[pi+3] < 64) continue;
+                        let touchesTransparent = false;
+                        for (let oy = -1; oy <= 1 && !touchesTransparent; oy++) {
+                            for (let ox = -1; ox <= 1; ox++) {
+                                if (Math.abs(ox) + Math.abs(oy) !== 1) continue;
+                                const nx = tx + ox, ny = ty + oy;
+                                if (nx < 0 || nx >= outW || ny < 0 || ny >= outH) { touchesTransparent = true; break; }
+                                const npi = (ny * outW + nx) * 4;
+                                if (pixelData[npi+3] < 64) { touchesTransparent = true; break; }
+                            }
+                        }
+                        const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2];
+                        const lum = lumMap[idx];
+                        const family = colorFamily(r, g, b);
+                        const strongInternalEdge = (edgeMap[idx] > 0.58 && lum < 185)
+                            || internalOutlineScore(tx, ty, r, g, b, lum, family) > 0.46;
+                        if (!touchesTransparent && !strongInternalEdge) continue;
+                        const wx = startX + tx, wy = startY + ty;
+                        if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y) continue;
+                        if (isProtectedTile(wx, wy)) continue;
+                        fgData[wx][wy] = JSON.parse(JSON.stringify(outlineBlock));
+                        outlinePlaced++;
+                    }
+                    if (ty % 8 === 0) drawCanvas();
+                }
+                placed += outlinePlaced;
+                drawCanvas();
+                finishGeneratedLayer('Image to Blocks');
+                statusEl.innerText = `Done: Pixel art done! ${placed} fg blocks and ${bgPlaced} pixel backgrounds placed (${modeLabel}, outline ${outlinePlaced}).`;
+                if (onComplete) onComplete();
+            } else {
+                drawCanvas();
+                finishGeneratedLayer('Image to Blocks');
+                statusEl.innerText = `Done: Pixel art done! ${placed} fg blocks and ${bgPlaced} pixel backgrounds placed (${modeLabel}).`;
+                if (onComplete) onComplete();
+            }
+        } else {
+            drawCanvas();
+            finishGeneratedLayer('Image to Blocks');
+            statusEl.innerText = `Done: Pixel art done! ${placed} fg blocks and ${bgPlaced} pixel backgrounds placed (${modeLabel}).`;
+            if (onComplete) onComplete();
+        }
+        })().catch(err => {
+            console.error(err);
+            statusEl.innerText = 'Error: Pixel art generation failed.';
+            if (onComplete) onComplete();
+        });
+        });
     });
 }
 
@@ -4853,7 +5629,7 @@ function runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl) {
 // MODE 2-: HD ALL BLOCKS -pure color match, FG only
 // No shading. Uses all/fg/wall block types for richer palette.
 // ---
-function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, statusEl) {
+function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, statusEl, onComplete = null) {
     const candidateBlocks = blockLibrary.filter(b => {
         if (b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
         const frameMatch = b.fileName.match(/_(\d+)\.png$/);
@@ -4862,16 +5638,124 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
     });
 
     batchSampleBlocks(candidateBlocks, statusEl, 'Sampling blocks...', (palette) => {
-        if (palette.length === 0) { statusEl.innerText = 'Error: No blocks sampled.'; return; }
+        if (palette.length === 0) { statusEl.innerText = 'Error: No blocks sampled.'; if (onComplete) onComplete(); return; }
 
         statusEl.innerText = `Placing blocks with ${palette.length} colors...`;
-        saveHistory();
-        ensureActiveLayer();
+        beginGeneratedLayer('Img to Blocks HD', 'Image to Blocks');
 
         const colorCache = {};
+        function hdColorFamily(r, g, b) {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            if (r >= g + 6 && b >= g + 4 && Math.abs(r - b) <= 42 && max - min >= 4) return 'mauve';
+            if (max - min < 10) return 'neutral';
+            if (b >= g + 8 && b >= r + 12) return 'blue';
+            const rr = r / 255, gg = g / 255, bb = b / 255;
+            const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
+            const d = mx - mn;
+            const sat = mx > 0 ? d / mx : 0;
+            if (sat < 0.14) return 'neutral';
+            let h = 0;
+            if (d > 0) {
+                if (mx === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+                else if (mx === gg) h = ((bb - rr) / d + 2) / 6;
+                else h = ((rr - gg) / d + 4) / 6;
+            }
+            if (h < 0.045 || h >= 0.93) return 'red';
+            if (h < 0.095) return 'orange';
+            if (h < 0.18) return 'yellow';
+            if (h < 0.42) return 'green';
+            if (h < 0.58) return 'cyan';
+            if (h < 0.76) return 'blue';
+            return 'mauve';
+        }
+        function hdMutedFamily(r, g, b, fallback = 'blue') {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            if (max - min <= 3) return fallback;
+            if (b >= r && b >= g) return (r >= g + 4) ? 'mauve' : 'blue';
+            if (r >= g && r >= b) return b >= g + 4 ? 'mauve' : (g >= b + 8 ? 'orange' : 'red');
+            if (g >= r && g >= b) return b >= r + 4 ? 'cyan' : 'green';
+            return fallback;
+        }
+        function hdIsNeutralEntry(entry) {
+            const max = Math.max(entry.r, entry.g, entry.b), min = Math.min(entry.r, entry.g, entry.b);
+            const sat = max > 0 ? (max - min) / max : 0;
+            return (max - min) <= 26 || sat <= 0.13;
+        }
+        function hdIsGreyLeanEntry(entry) {
+            if (isGreyLeanAssetName(entry.block)) return true;
+            const max = Math.max(entry.r, entry.g, entry.b), min = Math.min(entry.r, entry.g, entry.b);
+            const sat = max > 0 ? (max - min) / max : 0;
+            const lum = 0.299*entry.r + 0.587*entry.g + 0.114*entry.b;
+            return lum > 38 && lum < 214 && ((max - min) <= 34 || sat <= 0.18);
+        }
+        function hdAnalyzeImage() {
+            let count = 0, strong = 0, greyish = 0;
+            const families = { red:0, orange:0, yellow:0, green:0, cyan:0, blue:0, mauve:0 };
+            for (let i = 0; i < outW * outH; i++) {
+                const pi = i * 4;
+                if (pixelData[pi+3] < 64) continue;
+                const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2];
+                const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                const sat = max > 0 ? (max - min) / max : 0;
+                const lum = 0.299*r + 0.587*g + 0.114*b;
+                count++;
+                if (sat > 0.16 && lum > 20) {
+                    strong++;
+                    const fam = hdColorFamily(r, g, b);
+                    if (families[fam] !== undefined) families[fam]++;
+                }
+                if (sat < 0.12 && lum > 24 && lum < 220) greyish++;
+            }
+            let dominantFamily = 'blue', best = -1;
+            Object.entries(families).forEach(([family, total]) => {
+                if (total > best) { best = total; dominantFamily = family; }
+            });
+            const strongRatio = count ? strong / count : 0;
+            const greyRatio = count ? greyish / count : 0;
+            return { colorful: strongRatio > 0.04 && strongRatio > greyRatio * 0.20, dominantFamily };
+        }
+        const hdIntent = hdAnalyzeImage();
+        function hdFamilyMatches(entry, family) {
+            const entryFamily = hdColorFamily(entry.r, entry.g, entry.b);
+            if (family === 'yellow') return entryFamily === 'yellow' || entryFamily === 'orange';
+            if (family === 'cyan') return entryFamily === 'cyan' || entryFamily === 'blue';
+            if (family === 'mauve') return entryFamily === 'mauve' || entryFamily === 'blue';
+            if (family === 'green') return entryFamily === 'green' || entryFamily === 'cyan';
+            return entryFamily === family;
+        }
+        function findClosestColorSafeBlock(r, g, b) {
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            const lum = 0.299*r + 0.587*g + 0.114*b;
+            const span = max - min;
+            const sat = max > 0 ? span / max : 0;
+            const sourceGrey = (span <= 18 || (sat <= 0.10 && span <= 30))
+                && lum > 18
+                && !(g >= r + 8 && g >= b + 4)
+                && !(b >= r + 10 || (b >= g + 10 && r >= g - 4))
+                && !(r >= g + 10 && b >= g + 8);
+            if (sourceGrey) return findClosestBlock(r, g, b, palette);
+            const rawFamily = hdColorFamily(r, g, b);
+            const family = rawFamily === 'neutral' ? hdMutedFamily(r, g, b, hdIntent.dominantFamily) : rawFamily;
+            let best = null, bestDist = Infinity;
+            for (const entry of palette) {
+                if (hdIsGreyLeanEntry(entry)) continue;
+                if (!hdFamilyMatches(entry, family)) continue;
+                const dr = r - entry.r, dg = g - entry.g, db = b - entry.b;
+                const dist = dr*dr*0.299 + dg*dg*0.587 + db*db*0.114;
+                if (dist < bestDist) { bestDist = dist; best = entry; }
+            }
+            if (best) return best;
+            const nonNeutral = palette.filter(entry => !hdIsGreyLeanEntry(entry));
+            return findClosestBlock(r, g, b, nonNeutral.length ? nonNeutral : palette);
+        }
         let placed = 0;
 
+        (async () => {
         for (let ty = 0; ty < outH; ty++) {
+            if (ty % 2 === 0) {
+                statusEl.innerText = `Placing HD blocks... row ${ty+1}/${outH} (${placed} placed)`;
+                await yieldFrame();
+            }
             for (let tx = 0; tx < outW; tx++) {
                 const pi = (ty * outW + tx) * 4;
                 const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2], a = pixelData[pi+3];
@@ -4879,7 +5763,7 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
 
                 const key = `${r>>2},${g>>2},${b>>2}`;
                 if (!colorCache[key]) {
-                    const best = findClosestBlock(r, g, b, palette);
+                    const best = findClosestColorSafeBlock(r, g, b);
                     colorCache[key] = best ? best.block : null;
                 }
 
@@ -4887,11 +5771,155 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
                 if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y || !colorCache[key]) continue;
 
                 const block = colorCache[key];
-                placeBlockAt(wx, wy, block);
+                if (usesBackgroundLayer(block)) bgData[wx][wy] = JSON.parse(JSON.stringify(block));
+                else if (isWaterBlock(block)) waterData[wx][wy] = JSON.parse(JSON.stringify(block));
+                else fgData[wx][wy] = JSON.parse(JSON.stringify(block));
                 placed++;
             }
+            if (ty % 6 === 0) drawCanvas();
         }
+        drawCanvas();
+        finishGeneratedLayer('Image to Blocks');
         statusEl.innerText = `Done: Done! Placed ${placed} blocks using ${palette.length} colors.`;
+        if (onComplete) onComplete();
+        })().catch(err => {
+            console.error(err);
+            statusEl.innerText = 'Error: HD image generation failed.';
+            if (onComplete) onComplete();
+        });
+    });
+}
+
+function runWorldAssetMode(pixelData, outW, outH, startX, startY, statusEl, onComplete = null) {
+    const cleanAsset = (b) => {
+        if (!b || b.fileName.includes('_Alt') || b.fileName.includes('_Glow')) return false;
+        const frameMatch = b.fileName.match(/_(\d+)\.png$/);
+        if (frameMatch && frameMatch[1] !== '0') return false;
+        if (b.fileName.startsWith('Pixel Block') || b.fileName.startsWith('PixelBackground')) return false;
+        return true;
+    };
+    const solidBlocks = blockLibrary.filter(b => cleanAsset(b) && (b.folder === 'block' || b.type === 'block') && !isWaterBlock(b));
+    const wallBlocks = blockLibrary.filter(b => cleanAsset(b) && (b.folder === 'background' || b.type === 'wall'));
+    const propBlocks = blockLibrary.filter(b => cleanAsset(b) && b.type === 'prop');
+
+    Promise.all([
+        new Promise(resolve => batchSampleBlocks(solidBlocks, statusEl, 'Sampling world blocks...', resolve)),
+        new Promise(resolve => batchSampleBlocks(wallBlocks, statusEl, 'Sampling world backgrounds...', resolve)),
+        new Promise(resolve => batchSampleBlocks(propBlocks, statusEl, 'Sampling world props...', resolve))
+    ]).then(([solidPalette, wallPalette, propPalette]) => {
+        if (!solidPalette.length && !wallPalette.length && !propPalette.length) {
+            statusEl.innerText = 'Error: No world asset blocks sampled.';
+            if (onComplete) onComplete();
+            return;
+        }
+
+        const depthMode = document.getElementById('i2b-world-depth')?.value || 'balanced';
+        const detailDensity = parseInt(document.getElementById('i2b-world-detail')?.value || '2', 10);
+        const fgThreshold = depthMode === 'heavy' ? 0.30 : depthMode === 'light' ? 0.52 : 0.40;
+        const propThreshold = detailDensity === 3 ? 0.38 : detailDensity === 1 ? 0.62 : 0.50;
+        const shadowOffset = depthMode === 'heavy' ? 2 : 1;
+
+        statusEl.innerText = `Building world asset using ${solidPalette.length} blocks, ${wallPalette.length} backgrounds, ${propPalette.length} props...`;
+        beginGeneratedLayer('World Asset', 'World Asset');
+
+        const lumMap = new Float32Array(outW * outH);
+        let minLum = 255, maxLum = 0;
+        for (let i = 0; i < outW * outH; i++) {
+            const pi = i * 4;
+            if (pixelData[pi+3] < 64) { lumMap[i] = -1; continue; }
+            const lum = 0.299*pixelData[pi] + 0.587*pixelData[pi+1] + 0.114*pixelData[pi+2];
+            lumMap[i] = lum;
+            minLum = Math.min(minLum, lum);
+            maxLum = Math.max(maxLum, lum);
+        }
+        if (minLum > maxLum) { minLum = 0; maxLum = 255; }
+        const lumRange = Math.max(1, maxLum - minLum);
+
+        const edgeMap = new Float32Array(outW * outH);
+        let maxEdge = 1;
+        for (let ty = 1; ty < outH - 1; ty++) {
+            for (let tx = 1; tx < outW - 1; tx++) {
+                const idx = ty * outW + tx;
+                if (lumMap[idx] < 0) continue;
+                const l = lumMap[ty*outW + tx - 1], r = lumMap[ty*outW + tx + 1];
+                const u = lumMap[(ty - 1)*outW + tx], d = lumMap[(ty + 1)*outW + tx];
+                if (l < 0 || r < 0 || u < 0 || d < 0) { edgeMap[idx] = 1; continue; }
+                const edge = Math.abs(l - r) + Math.abs(u - d);
+                edgeMap[idx] = edge;
+                maxEdge = Math.max(maxEdge, edge);
+            }
+        }
+        for (let i = 0; i < edgeMap.length; i++) edgeMap[i] = Math.min(1, edgeMap[i] / maxEdge);
+
+        const matchCache = {};
+        function paletteMatch(palette, r, g, b, keyPrefix) {
+            if (!palette.length) return null;
+            const key = `${keyPrefix}:${r>>2},${g>>2},${b>>2}`;
+            if (matchCache[key] !== undefined) return matchCache[key];
+            const match = findClosestBlock(r, g, b, palette);
+            matchCache[key] = match ? match.block : null;
+            return matchCache[key];
+        }
+        function put(layer, wx, wy, block) {
+            if (!block || wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y || isProtectedTile(wx, wy)) return 0;
+            layer[wx][wy] = JSON.parse(JSON.stringify(block));
+            return 1;
+        }
+
+        let fgPlaced = 0, bgPlaced = 0, propPlaced = 0;
+        (async () => {
+            for (let ty = 0; ty < outH; ty++) {
+                if (ty % 2 === 0) {
+                    statusEl.innerText = `Building world asset... row ${ty+1}/${outH} (${fgPlaced} blocks, ${bgPlaced} bg, ${propPlaced} props)`;
+                    await yieldFrame();
+                }
+                for (let tx = 0; tx < outW; tx++) {
+                    const pi = (ty * outW + tx) * 4;
+                    const a = pixelData[pi+3];
+                    if (a < 64) continue;
+                    const r = pixelData[pi], g = pixelData[pi+1], b = pixelData[pi+2];
+                    const wx = startX + tx, wy = startY + ty;
+                    if (wx < 0 || wx >= GRID_X || wy < 0 || wy >= GRID_Y || isProtectedTile(wx, wy)) continue;
+
+                    const lum = lumMap[ty * outW + tx];
+                    const shade = 1 - ((lum - minLum) / lumRange);
+                    const edge = edgeMap[ty * outW + tx];
+                    const structural = shade > fgThreshold || edge > 0.46 || a < 220;
+                    const detail = edge > propThreshold && propPalette.length && ((tx + ty) % (detailDensity === 3 ? 2 : 3) === 0);
+
+                    const bgBlock = paletteMatch(wallPalette, Math.round(r * 0.72), Math.round(g * 0.72), Math.round(b * 0.78), 'bg');
+                    bgPlaced += put(bgData, wx, wy, bgBlock);
+
+                    if (structural && wallPalette.length && solidPalette.length) {
+                        const shadowBg = paletteMatch(wallPalette, Math.round(r * 0.45), Math.round(g * 0.45), Math.round(b * 0.50), 'shadow');
+                        bgPlaced += put(bgData, wx + shadowOffset, wy + shadowOffset, shadowBg);
+                    }
+
+                    if (structural && solidPalette.length) {
+                        const block = paletteMatch(solidPalette, Math.round(r * (shade > 0.65 ? 0.62 : 0.88)), Math.round(g * (shade > 0.65 ? 0.62 : 0.88)), Math.round(b * (shade > 0.65 ? 0.62 : 0.88)), 'fg');
+                        fgPlaced += put(fgData, wx, wy, block);
+                    }
+
+                    if (detail) {
+                        const prop = paletteMatch(propPalette, r, g, b, 'prop');
+                        propPlaced += put(fgData, wx, wy, prop);
+                    }
+                }
+                if (ty % 6 === 0) drawCanvas();
+            }
+            drawCanvas();
+            finishGeneratedLayer('World Asset');
+            statusEl.innerText = `Done: World asset built! ${fgPlaced} blocks, ${bgPlaced} backgrounds, ${propPlaced} props.`;
+            if (onComplete) onComplete();
+        })().catch(err => {
+            console.error(err);
+            statusEl.innerText = 'Error: World asset generation failed.';
+            if (onComplete) onComplete();
+        });
+    }).catch(err => {
+        console.error(err);
+        statusEl.innerText = 'Error: Could not sample world asset palettes.';
+        if (onComplete) onComplete();
     });
 }
 
@@ -4900,47 +5928,50 @@ function runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, s
 // ---
 document.getElementById('img2blocks-convert-btn').onclick = () => {
     if (!i2bImgData) { alert('Please upload an image first.'); return; }
+    const releaseGeneration = beginGenerationLock('img2blocks', 'img2blocks-convert-btn', 'Generating...');
+    if (!releaseGeneration) return;
 
     const startX = parseInt(document.getElementById('i2b-x').value);
     const startY = parseInt(document.getElementById('i2b-y').value);
     const tileW = parseInt(document.getElementById('i2b-w').value);
     const tileH = parseInt(document.getElementById('i2b-h').value);
-    const variety = parseInt(document.getElementById('i2b-variety').value) || 1;
+    const pixelDepthMode = document.getElementById('i2b-pixel-depth-mode')?.value || 'blocks-base';
+    const outlineMode = document.getElementById('i2b-outline-mode')?.checked || false;
     const doFlip = document.getElementById('i2b-flip').checked;
 
-    const outW = doFlip ? tileH : tileW;
-    const outH = doFlip ? tileW : tileH;
+    const outW = tileW;
+    const outH = tileH;
 
     const statusEl = document.getElementById('i2b-status');
     statusEl.innerText = 'Loading image...';
 
     const tempImg = new Image();
     tempImg.onload = () => {
-        const pixelData = sampleImageToCanvas(tempImg, outW, outH, doFlip);
+        let pixelData;
+        try {
+            pixelData = sampleImageToCanvas(tempImg, outW, outH, doFlip);
+        } catch (err) {
+            console.error(err);
+            statusEl.innerText = 'Error: Could not read image pixels.';
+            releaseGeneration();
+            return;
+        }
 
-        if (variety === 1) {
+        if (img2BlocksSection === 'pixel') {
             // --- MODE 1: Clean pixel art (pixel blocks only, FG layer) ---
             statusEl.innerText = 'Pixel art mode: sampling pixel blocks...';
-            runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl);
+            runPixelBlocksMode(pixelData, outW, outH, startX, startY, statusEl, pixelDepthMode, outlineMode, releaseGeneration);
         } else {
-            // --- MODE 2-: HD Depth Art (dual-layer + 3-tier shading) ---
-            statusEl.innerText = 'HD mode: sampling block palette...';
-
-            const isPixelBlock = (b) => b.fileName.startsWith('Pixel Block');
-            const isBlockFolder = (b) => b.folder === 'block';
-            const isWallFolder  = (b) => b.folder === 'background';
-
-            let blockSetFilter;
-            if (variety === 2) blockSetFilter = (b) => isPixelBlock(b) || isBlockFolder(b);
-            else if (variety === 3) blockSetFilter = (b) => isPixelBlock(b) || isBlockFolder(b) || isWallFolder(b);
-            else blockSetFilter = () => true;
-
-            runHDDepthMode(pixelData, outW, outH, startX, startY, blockSetFilter, statusEl);
+            statusEl.innerText = 'World asset mode: sampling world blocks...';
+            runWorldAssetMode(pixelData, outW, outH, startX, startY, statusEl, releaseGeneration);
         }
+    };
+    tempImg.onerror = () => {
+        statusEl.innerText = 'Error: Failed to load image.';
+        releaseGeneration();
     };
     tempImg.src = i2bImgData;
 };
-
 
 // ============================================================
 // FEATURE: Image to World (i2w)
@@ -5000,33 +6031,53 @@ document.getElementById('i2w-gen-upload-btn').onclick = () => i2wGenInput.click(
 
 let i2wGenImgData = null;
 
+function setI2wRepImage(data, name, remember = true) {
+    i2wRepImgData = data;
+    const preview = document.getElementById('i2w-rep-preview');
+    preview.innerHTML = `<img src="${i2wRepImgData}" title="${name || ''}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #22c55e;">`;
+    document.getElementById('i2w-replicate-controls').classList.remove('hidden');
+    document.getElementById('i2w-rep-status').innerText = 'Screenshot loaded. Configure and replicate!';
+    if (remember) addRecentImage(name, data);
+}
+
+function setI2wGenImage(data, name, remember = true) {
+    i2wGenImgData = data;
+    const preview = document.getElementById('i2w-gen-preview');
+    preview.innerHTML = `<img src="${i2wGenImgData}" title="${name || ''}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #f59e0b;">`;
+    document.getElementById('i2w-gen-controls').classList.remove('hidden');
+    document.getElementById('i2w-gen-status').innerText = 'Image loaded. Configure and generate!';
+    if (remember) addRecentImage(name, data);
+}
+
 document.getElementById('i2w-input').onchange = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        i2wRepImgData = ev.target.result;
-        const preview = document.getElementById('i2w-rep-preview');
-        preview.innerHTML = `<img src="${i2wRepImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #22c55e;">`;
-        document.getElementById('i2w-replicate-controls').classList.remove('hidden');
-        document.getElementById('i2w-rep-status').innerText = 'Screenshot loaded. Configure and replicate!';
+        setI2wRepImage(ev.target.result, file.name);
     };
     reader.readAsDataURL(file);
     e.target.value = '';
 };
+document.getElementById('i2w-rep-recent-use-btn')?.addEventListener('click', () => {
+    const recent = getSelectedRecentImage('i2w-rep-recent-select');
+    if (!recent) return;
+    setI2wRepImage(recent.data, recent.name, false);
+});
 
 i2wGenInput.onchange = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        i2wGenImgData = ev.target.result;
-        const preview = document.getElementById('i2w-gen-preview');
-        preview.innerHTML = `<img src="${i2wGenImgData}" style="max-width:100%;max-height:100px;border-radius:4px;border:1px solid #f59e0b;">`;
-        document.getElementById('i2w-gen-controls').classList.remove('hidden');
-        document.getElementById('i2w-gen-status').innerText = 'Image loaded. Configure and generate!';
+        setI2wGenImage(ev.target.result, file.name);
     };
     reader.readAsDataURL(file);
     e.target.value = '';
 };
+document.getElementById('i2w-gen-recent-use-btn')?.addEventListener('click', () => {
+    const recent = getSelectedRecentImage('i2w-gen-recent-select');
+    if (!recent) return;
+    setI2wGenImage(recent.data, recent.name, false);
+});
 
 // ---
 // REPLICATE MODE: core logic
@@ -5114,6 +6165,8 @@ function findBestFingerprint(regionFp, entries, threshold) {
 
 document.getElementById('i2w-replicate-btn').onclick = () => {
     if (!i2wRepImgData) { alert('Upload a screenshot first.'); return; }
+    const releaseGeneration = beginGenerationLock('i2w-replicate', 'i2w-replicate-btn', 'Replicating...');
+    if (!releaseGeneration) return;
 
     const startX  = parseInt(document.getElementById('i2w-rep-x').value) || 0;
     const startY  = parseInt(document.getElementById('i2w-rep-y').value) || 0;
@@ -5129,13 +6182,13 @@ document.getElementById('i2w-replicate-btn').onclick = () => {
     // MSE threshold: slider 10->00, 45->000, 120->2000
     const mseThreshold = Math.round((toleranceSlider / 10) ** 2.2 * 120);
 
-    btn.disabled = true;
     btn.innerText = 'Building fingerprints...';
     statusEl.style.color = '#4ade80';
     statusEl.innerText = 'Fingerprinting block library...';
 
     // Use setTimeout to let UI update before heavy work
     setTimeout(() => {
+        try {
         const { fgEntries, bgEntries } = buildFingerprintLibrary(matchBg);
         statusEl.innerText = `Library ready: ${fgEntries.length} fg, ${bgEntries.length} bg. Scanning screenshot...`;
 
@@ -5150,8 +6203,7 @@ document.getElementById('i2w-replicate-btn').onclick = () => {
             const tilePixW = img.width  / tileW;
             const tilePixH = img.height / tileH;
 
-            saveHistory();
-            ensureActiveLayer();
+            beginGeneratedLayer('Img to World Replicate', 'Image to World');
             let placed = 0, skipped = 0;
 
             for (let ty = 0; ty < tileH; ty++) {
@@ -5195,17 +6247,23 @@ document.getElementById('i2w-replicate-btn').onclick = () => {
             }
 
             drawCanvas();
+            finishGeneratedLayer('Image to World');
             statusEl.style.color = '#4ade80';
             statusEl.innerText = `Done: Done! ${placed} blocks placed, ${skipped} tiles skipped (no match).`;
-            btn.disabled = false;
-            btn.innerText = 'Replicate World';
+            releaseGeneration();
         };
         img.onerror = () => {
             statusEl.style.color = '#f87171';
             statusEl.innerText = 'Failed: Failed to load screenshot image.';
-            btn.disabled = false; btn.innerText = 'Replicate World';
+            releaseGeneration();
         };
         img.src = i2wRepImgData;
+        } catch (err) {
+            console.error(err);
+            statusEl.style.color = '#f87171';
+            statusEl.innerText = 'Failed: Replicate generation failed.';
+            releaseGeneration();
+        }
     }, 50);
 };
 
@@ -5230,22 +6288,23 @@ function placeBlock(palette, r, g, b, wx, wy, layer) {
 
 document.getElementById('i2w-gen-btn').onclick = async () => {
     if (!i2wGenImgData) { alert('Upload an image first.'); return; }
+    const releaseGeneration = beginGenerationLock('i2w-generate', 'i2w-gen-btn', 'Generating...');
+    if (!releaseGeneration) return;
 
+    const statusEl = document.getElementById('i2w-gen-status');
+    const btn      = document.getElementById('i2w-gen-btn');
+
+    try {
     const startX  = parseInt(document.getElementById('i2w-gen-x').value) || 0;
     const startY  = parseInt(document.getElementById('i2w-gen-y').value) || 0;
     const tileW   = parseInt(document.getElementById('i2w-gen-w').value) || 40;
     const tileH   = parseInt(document.getElementById('i2w-gen-h').value) || 30;
     const depth   = parseInt(document.getElementById('i2w-gen-depth').value) || 2;
     const replace = document.getElementById('i2w-gen-replace').checked;
-    const statusEl = document.getElementById('i2w-gen-status');
-    const btn      = document.getElementById('i2w-gen-btn');
 
-    btn.disabled = true; btn.innerText = 'Analysing image...';
+    btn.innerText = 'Analysing image...';
     statusEl.style.color = '#fbbf24';
     statusEl.innerText = 'Building block palettes...';
-
-    // Helper: yield to the browser so UI can repaint
-    const yieldFrame = () => new Promise(r => setTimeout(r, 0));
 
     // --- Build palettes ---
     const blockTypes = ['block', 'wall', 'prop', 'water'];
@@ -5379,8 +6438,7 @@ document.getElementById('i2w-gen-btn').onclick = async () => {
         }
     }
 
-    saveHistory();
-    ensureActiveLayer();
+    beginGeneratedLayer('Img to World Generate', 'Image to World');
     let placed = 0;
 
     // --- Main placement loop -yield every row to avoid UI freeze ---
@@ -5458,7 +6516,14 @@ document.getElementById('i2w-gen-btn').onclick = async () => {
     }
 
     drawCanvas();
+    finishGeneratedLayer('Image to World');
     statusEl.style.color = '#4ade80';
     statusEl.innerText = `Done: World generated! ${placed} blocks placed.`;
-    btn.disabled = false; btn.innerText = 'Generate World from Image';
+    releaseGeneration();
+    } catch (err) {
+        console.error(err);
+        statusEl.style.color = '#f87171';
+        statusEl.innerText = 'Failed: World generation failed.';
+        releaseGeneration();
+    }
 };
